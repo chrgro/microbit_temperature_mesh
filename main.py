@@ -1,3 +1,7 @@
+# DEVICE ID
+# CHANGE FOR EVERY NEW DEVICE!
+device_id = 4
+
 # Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
 # instead of the internal microbit sensor
@@ -22,10 +26,30 @@ def on_button_pressed_a():
     Send_message("t", read_temp())
 input.on_button_pressed(Button.A, on_button_pressed_a)
 
+# On press button B, change how much is shown on screen
+def on_button_pressed_b():
+    # 0: Show everything (current temp + radio events)
+    # 1: Only show radio events, don't show current temp
+    # 2: Only show current temp, don't show radio events
+    # 3: Keep the screen clear
+    global verbosity_level
+    verbosity_level = (verbosity_level + 1) % 4
+    if verbosity_level == 0:
+        basic.show_string("SHOW ALL")
+    elif verbosity_level == 1:
+        basic.show_string("RADIO ONLY")
+    elif verbosity_level == 2:
+        basic.show_string("TEMP ONLY")
+    elif verbosity_level == 3:
+        basic.show_string("QUIET")
+input.on_button_pressed(Button.B, on_button_pressed_b)
+
+
 # Wrapper function to send messages out on BLE
 def Send_message(Type: str, value: number):
     global message_to_send
-    basic.show_icon(IconNames.DUCK)
+    if verbosity_level in [0, 1]:
+        basic.show_icon(IconNames.DUCK)
     message_to_send = "" + str(device_id) + ":" + Type + ":" + str(value)
     radio.send_string(message_to_send)
     serial.write_line("" + message_to_send + ":sent")
@@ -75,8 +99,9 @@ def is_message_bad(receivedString : str):
 
 # Callback function on recieved wireless data
 def on_received_string(receivedString : str):
-    global received_message_device_id, received_message_value_type
-    basic.show_icon(IconNames.SMALL_DIAMOND)
+    global received_message_device_id, received_message_value_type, verbosity_level
+    if verbosity_level in [0, 1]:
+        basic.show_icon(IconNames.SMALL_DIAMOND)
 
     if is_message_bad(receivedString):
         pass
@@ -91,13 +116,16 @@ def on_received_string(receivedString : str):
                 received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
                 radio.send_string(receivedString)
                 serial.write_line("" + receivedString + ":forward")
-                basic.show_icon(IconNames.YES)
+                if verbosity_level in [0, 1]:
+                    basic.show_icon(IconNames.YES)
             else:
                 serial.write_line("" + receivedString + ":reject_seen_recently")
-                basic.show_icon(IconNames.NO)
+                if verbosity_level in [0, 1]:
+                    basic.show_icon(IconNames.NO)
         else:
             serial.write_line("" + receivedString + ":reject_own_id")
-            basic.show_icon(IconNames.NO)
+            if verbosity_level in [0, 1]:
+                basic.show_icon(IconNames.NO)
     basic.clear_screen()
 radio.on_received_string(on_received_string)
 
@@ -126,9 +154,8 @@ def Get_message_received_time(message3: str):
         return 0
 
 # Initial setup and ID print
-device_id = 3
-
 FAILURE_VALUE = -999
+verbosity_level = 0
 received_message_value_type = ""
 received_message_device_id = -1
 time_since_message = 0
@@ -148,7 +175,8 @@ basic.clear_screen()
 
 # Keep printing the current temp
 def on_forever():
-    basic.show_number(read_temp())
+    if verbosity_level in [0, 2]:
+        basic.show_number(read_temp())
     basic.pause(5000)
 basic.forever(on_forever)
 

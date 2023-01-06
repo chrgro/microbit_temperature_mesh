@@ -1,3 +1,6 @@
+//  DEVICE ID
+//  CHANGE FOR EVERY NEW DEVICE!
+let device_id = 4
 //  Function to retrieve the temperature
 //  In the future, expand this to read from an external set_transmit_power
 //  instead of the internal microbit sensor
@@ -29,10 +32,32 @@ function Get_message_device_id(message: string): number {
 input.onButtonPressed(Button.A, function on_button_pressed_a() {
     Send_message("t", read_temp())
 })
+//  On press button B, change how much is shown on screen
+input.onButtonPressed(Button.B, function on_button_pressed_b() {
+    //  0: Show everything (current temp + radio events)
+    //  1: Only show radio events, don't show current temp
+    //  2: Only show current temp, don't show radio events
+    //  3: Keep the screen clear
+    
+    verbosity_level = (verbosity_level + 1) % 4
+    if (verbosity_level == 0) {
+        basic.showString("SHOW ALL")
+    } else if (verbosity_level == 1) {
+        basic.showString("RADIO ONLY")
+    } else if (verbosity_level == 2) {
+        basic.showString("TEMP ONLY")
+    } else if (verbosity_level == 3) {
+        basic.showString("QUIET")
+    }
+    
+})
 //  Wrapper function to send messages out on BLE
 function Send_message(Type: string, value: number) {
     
-    basic.showIcon(IconNames.Duck)
+    if ([0, 1].indexOf(verbosity_level) >= 0) {
+        basic.showIcon(IconNames.Duck)
+    }
+    
     message_to_send = "" + ("" + device_id) + ":" + Type + ":" + ("" + value)
     radio.sendString(message_to_send)
     serial.writeLine("" + message_to_send + ":sent")
@@ -95,7 +120,10 @@ function is_message_bad(receivedString: string): boolean {
 //  Callback function on recieved wireless data
 radio.onReceivedString(function on_received_string(receivedString: string) {
     
-    basic.showIcon(IconNames.SmallDiamond)
+    if ([0, 1].indexOf(verbosity_level) >= 0) {
+        basic.showIcon(IconNames.SmallDiamond)
+    }
+    
     if (is_message_bad(receivedString)) {
         
     } else {
@@ -109,15 +137,24 @@ radio.onReceivedString(function on_received_string(receivedString: string) {
                 received_messages.push("" + received_message_device_id + ":" + received_message_value_type + "=" + ("" + input.runningTime()))
                 radio.sendString(receivedString)
                 serial.writeLine("" + receivedString + ":forward")
-                basic.showIcon(IconNames.Yes)
+                if ([0, 1].indexOf(verbosity_level) >= 0) {
+                    basic.showIcon(IconNames.Yes)
+                }
+                
             } else {
                 serial.writeLine("" + receivedString + ":reject_seen_recently")
-                basic.showIcon(IconNames.No)
+                if ([0, 1].indexOf(verbosity_level) >= 0) {
+                    basic.showIcon(IconNames.No)
+                }
+                
             }
             
         } else {
             serial.writeLine("" + receivedString + ":reject_own_id")
-            basic.showIcon(IconNames.No)
+            if ([0, 1].indexOf(verbosity_level) >= 0) {
+                basic.showIcon(IconNames.No)
+            }
+            
         }
         
     }
@@ -162,8 +199,8 @@ function Get_message_received_time(message3: string): number {
 }
 
 //  Initial setup and ID print
-let device_id = 3
 let FAILURE_VALUE = -999
+let verbosity_level = 0
 let received_message_value_type = ""
 let received_message_device_id = -1
 let time_since_message = 0
@@ -181,7 +218,10 @@ basic.showString("Temp")
 basic.clearScreen()
 //  Keep printing the current temp
 basic.forever(function on_forever() {
-    basic.showNumber(read_temp())
+    if ([0, 2].indexOf(verbosity_level) >= 0) {
+        basic.showNumber(read_temp())
+    }
+    
     basic.pause(5000)
 })
 //  Keep sending out the temperature
