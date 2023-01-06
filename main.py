@@ -1,4 +1,4 @@
- # Function to retrieve the temperature
+# Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
 # instead of the internal microbit sensor
 def read_temp():
@@ -6,8 +6,16 @@ def read_temp():
 
 # From a message <id>:<type>:<value>, extract the
 # device id
+# Return ID 0 on any errors
+# Accept only IDs between 1 and 99
 def Get_message_device_id(message: str):
-    return int(message.split(":")[0])
+    try:
+        t = parseInt(message.split(":")[0])
+        if not (0 < t < 100):
+            return 0
+        return t
+    except:
+        return 0
 
 # On press button A, force a value send
 def on_button_pressed_a():
@@ -28,7 +36,7 @@ def Send_message(Type: str, value: number):
 # Return 0 if we should not forward this message, 1 if we should forward.
 def Check_last_message_time(received_device_id: number, received_value_type: str):
     global message_received_time, time_since_message
-    serial.write_line("# Checking for last recieved time for device_id" + str(received_device_id) + " and type "+received_value_type)
+    serial.write_line("# Checking for last recieved time for device_id " + str(received_device_id) + " and type "+received_value_type)
     for received_message in received_messages:
         if received_message.includes("" + str(received_device_id) + ":" + received_value_type + "="):
             serial.write_line("# Found matching previous id+type: " + received_message)
@@ -43,43 +51,84 @@ def Check_last_message_time(received_device_id: number, received_value_type: str
                 serial.write_line("# Only an old match, removing it and forwarding")
                 received_messages.remove_at(received_messages.index(received_message))
                 return 1
+    serial.write_line("# Found no previous match of this id+type")
     return 1
 
+# Filter bad messages
+def is_message_bad(receivedString : str):
+    parts = receivedString.split(":")
+    # Reject any msg without 3 parts
+    if len(parts) != 3:
+        serial.write_line("# Error, rejecting message for not having 3 ':' separated parts: "+receivedString)
+        return True
+    # Reject messages of type different a small group
+    if parts[1] not in ["t", "h", "c", "v", "n", "a", "b", "c"]:
+        serial.write_line("# Error, rejecting message not having an expected type "+receivedString)
+        return True
+
+    # Reject messages that hit the throw condition, i.e. its not a valid number
+    if Get_message_value(receivedString) == FAILURE_VALUE:
+        serial.write_line("# Error, rejecting message not having a number value "+receivedString)
+        return True
+        
+    return False
+
 # Callback function on recieved wireless data
-def on_received_string(receivedString):
+def on_received_string(receivedString : str):
     global received_message_device_id, received_message_value_type
     basic.show_icon(IconNames.SMALL_DIAMOND)
-    # Extract device ID and value type from the incoming data
-    received_message_device_id = Get_message_device_id(receivedString)
-    received_message_value_type = Get_message_value_type(receivedString)
-    # Check if its our own data coming back to us
-    if device_id != received_message_device_id:
-        # Check whether we've recently seen this data
-        if Check_last_message_time(received_message_device_id, received_message_value_type) == 1:
-            received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
-            radio.send_string(receivedString)
-            serial.write_line("" + receivedString + ":forward")
-            basic.show_icon(IconNames.YES)
-        else:
-            serial.write_line("" + receivedString + ":reject_seen_recently")
-            basic.show_icon(IconNames.NO)
+
+    if is_message_bad(receivedString):
+        pass
     else:
-        serial.write_line("" + receivedString + ":reject_own_id")
-        basic.show_icon(IconNames.NO)
+        # Extract device ID and value type from the incoming data
+        received_message_device_id = Get_message_device_id(receivedString)
+        received_message_value_type = Get_message_value_type(receivedString)
+        # Check if its our own data coming back to us
+        if device_id != received_message_device_id:
+            # Check whether we've recently seen this data
+            if Check_last_message_time(received_message_device_id, received_message_value_type) == 1:
+                received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
+                radio.send_string(receivedString)
+                serial.write_line("" + receivedString + ":forward")
+                basic.show_icon(IconNames.YES)
+            else:
+                serial.write_line("" + receivedString + ":reject_seen_recently")
+                basic.show_icon(IconNames.NO)
+        else:
+            serial.write_line("" + receivedString + ":reject_own_id")
+            basic.show_icon(IconNames.NO)
     basic.clear_screen()
 radio.on_received_string(on_received_string)
 
 # Split out the type from <id>:<type>:<value>
-def Get_message_value_type(message2: str):
-    return message2.split(":")[1]
+def Get_message_value_type(message: str):
+    try:
+        return message.split(":")[1]
+    except:
+        # This is after validation of message types, should
+        # in theory this should be unreachable
+        return "bad_type"
+
+# Split out the value from <id>:<type>:<value>
+def Get_message_value(message: str):
+    try:
+        v = parseInt(message.split(":")[2])
+        return v
+    except:
+        return FAILURE_VALUE
 
 # Split out the recieved time from <id>:<type>=<timestamp>
 def Get_message_received_time(message3: str):
-    return int(message3.split("=")[1])
+    try:
+        return int(message3.split("=")[1])
+    except:
+        return 0
 
 # Initial setup and ID print
-device_id = 2
+device_id = 3
 
+FAILURE_VALUE = -999
 received_message_value_type = ""
 received_message_device_id = -1
 time_since_message = 0
