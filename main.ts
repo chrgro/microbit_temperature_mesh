@@ -4,6 +4,9 @@ function read_temp () {
 function Get_message_device_id (message: string) {
     return parseFloat("")
 }
+input.onButtonPressed(Button.A, function () {
+    Send_message("t", read_temp())
+})
 function Send_message (Type: string, value: number) {
     basic.showIcon(IconNames.Duck)
     message_to_send = "" + device_id + ":" + Type + ":" + value
@@ -59,7 +62,7 @@ let message_received_time = 0
 let message_to_send = ""
 let received_messages: string[] = []
 let device_id = 0
-device_id = 2
+device_id = 1
 received_messages = []
 led.setBrightness(128)
 radio.setGroup(1)
@@ -74,5 +77,5 @@ basic.forever(function () {
 })
 basic.forever(function () {
     basic.pause(600000)
-    Send_message("t", 0)
+    Send_message("t", read_temp())
 })
