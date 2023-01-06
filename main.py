@@ -1,6 +1,6 @@
 # DEVICE ID
 # CHANGE FOR EVERY NEW DEVICE!
-device_id = 4
+DEVICE_ID = 4
 
 # Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
@@ -12,7 +12,7 @@ def read_temp():
 # device id
 # Return ID 0 on any errors
 # Accept only IDs between 1 and 99
-def Get_message_device_id(message: str):
+def get_message_device_id(message: str):
     try:
         t = parseInt(message.split(":")[0])
         if not (0 < t < 100):
@@ -23,7 +23,7 @@ def Get_message_device_id(message: str):
 
 # On press button A, force a value send
 def on_button_pressed_a():
-    Send_message("t", read_temp())
+    send_message("t", read_temp())
 input.on_button_pressed(Button.A, on_button_pressed_a)
 
 # On press button B, change how much is shown on screen
@@ -46,11 +46,11 @@ input.on_button_pressed(Button.B, on_button_pressed_b)
 
 
 # Wrapper function to send messages out on BLE
-def Send_message(Type: str, value: number):
+def send_message(Type: str, value: number):
     global message_to_send
     if verbosity_level in [0, 1]:
         basic.show_icon(IconNames.DUCK)
-    message_to_send = "" + str(device_id) + ":" + Type + ":" + str(value)
+    message_to_send = "" + str(DEVICE_ID) + ":" + Type + ":" + str(value)
     radio.send_string(message_to_send)
     serial.write_line("" + message_to_send + ":sent")
     basic.clear_screen()
@@ -58,14 +58,14 @@ def Send_message(Type: str, value: number):
 # For an incoming message with id and type, check if we have reject_seen_recently
 # seen a message like it, and update the list as needed
 # Return 0 if we should not forward this message, 1 if we should forward.
-def Check_last_message_time(received_device_id: number, received_value_type: str):
+def check_last_message_time(received_device_id: number, received_value_type: str):
     global message_received_time, time_since_message
     serial.write_line("# Checking for last recieved time for device_id " + str(received_device_id) + " and type "+received_value_type)
     for received_message in received_messages:
         if received_message.includes("" + str(received_device_id) + ":" + received_value_type + "="):
             serial.write_line("# Found matching previous id+type: " + received_message)
 
-            message_received_time = Get_message_received_time(received_message)
+            message_received_time = get_message_received_time(received_message)
             running_time = input.running_time() 
             time_since_message = running_time - message_received_time
             if time_since_message < 540000:
@@ -107,12 +107,12 @@ def on_received_string(receivedString : str):
         pass
     else:
         # Extract device ID and value type from the incoming data
-        received_message_device_id = Get_message_device_id(receivedString)
-        received_message_value_type = Get_message_value_type(receivedString)
+        received_message_device_id = get_message_device_id(receivedString)
+        received_message_value_type = get_message_value_type(receivedString)
         # Check if its our own data coming back to us
-        if device_id != received_message_device_id:
+        if DEVICE_ID != received_message_device_id:
             # Check whether we've recently seen this data
-            if Check_last_message_time(received_message_device_id, received_message_value_type) == 1:
+            if check_last_message_time(received_message_device_id, received_message_value_type) == 1:
                 received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
                 radio.send_string(receivedString)
                 serial.write_line("" + receivedString + ":forward")
@@ -130,7 +130,7 @@ def on_received_string(receivedString : str):
 radio.on_received_string(on_received_string)
 
 # Split out the type from <id>:<type>:<value>
-def Get_message_value_type(message: str):
+def get_message_value_type(message: str):
     try:
         return message.split(":")[1]
     except:
@@ -147,7 +147,7 @@ def Get_message_value(message: str):
         return FAILURE_VALUE
 
 # Split out the recieved time from <id>:<type>=<timestamp>
-def Get_message_received_time(message3: str):
+def get_message_received_time(message3: str):
     try:
         return int(message3.split("=")[1])
     except:
@@ -166,22 +166,22 @@ received_messages = []
 led.set_brightness(128)
 radio.set_group(1)
 radio.set_transmit_power(7)
-serial.write_line("# Powered on, with ID: "+  str(device_id))
+serial.write_line("# Powered on, with ID: "+  str(DEVICE_ID))
 
-basic.show_string("ID " + str(device_id))
+basic.show_string("ID " + str(DEVICE_ID))
 basic.show_icon(IconNames.SQUARE)
 basic.show_string("Temp")
 basic.clear_screen()
 
 # Keep printing the current temp
-def on_forever():
+def on_forever_show_screen():
     if verbosity_level in [0, 2]:
         basic.show_number(read_temp())
     basic.pause(5000)
-basic.forever(on_forever)
+basic.forever(on_forever_show_screen)
 
 # Keep sending out the temperature
-def on_forever2():
+def on_forever_send():
     basic.pause(600000)
-    Send_message("t", read_temp())
-basic.forever(on_forever2)
+    send_message("t", read_temp())
+basic.forever(on_forever_send)
