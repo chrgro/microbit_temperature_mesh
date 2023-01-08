@@ -242,6 +242,6 @@ basic.forever(on_forever_show_screen)
 
 # Keep sending out the temperature
 def on_forever_send():
-    basic.pause(600000)
+    basic.pause(TX_INTERVAL_MS)
     send_message("t", read_temp())
 basic.forever(on_forever_send)
