@@ -1,11 +1,46 @@
 //  DEVICE ID
 //  CHANGE FOR EVERY NEW DEVICE!
-let DEVICE_ID = 4
+let DEVICE_ID = 2
 //  Function to retrieve the temperature
 //  In the future, expand this to read from an external set_transmit_power
 //  instead of the internal microbit sensor
 function read_temp(): number {
     return input.temperature()
+}
+
+//  Encryption key, must be 19 bytes
+let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+function encrypt_message(message: string): Buffer {
+    let char: number;
+    let padded_message = "" + (" " + message + "                   ")
+    let ciphertext = control.createBuffer(19)
+    let iv = randint(0, 255)
+    let mod_v = iv
+    for (let i = 0; i < key.length; i++) {
+        char = padded_message.charCodeAt(i)
+        ciphertext[i] = char ^ mod_v ^ key[i]
+        mod_v = ciphertext[i]
+    }
+    return ciphertext
+}
+
+function decrypt_message(message: Buffer): string {
+    let decrypted: number;
+    let padded_plaintext = ""
+    //  19 bytes + NULL for string termination
+    let padded_plain_buffers = control.createBuffer(19)
+    let mod_v = message[0]
+    for (let i = 0; i < key.length; i++) {
+        decrypted = message[i] ^ mod_v ^ key[i]
+        // serial.write_line("Ciphertext "+ str(message[i])+" mod_v "+str(mod_v)+ " key "+key[i])
+        padded_plain_buffers[i] = decrypted
+        // serial.write_line("decrypted single: "+str(decrypted) + " decrypted arr: "+ str(padded_plain_buffers[i]))
+        mod_v = message[i]
+        
+    }
+    let s = padded_plain_buffers.toString()
+    // serial.write_line("Full string: "+s)
+    return _py.py_string_strip(("" + s).slice(1))
 }
 
 //  From a message <id>:<type>:<value>, extract the
@@ -59,7 +94,8 @@ function send_message(Type: string, value: number) {
     }
     
     message_to_send = "" + ("" + DEVICE_ID) + ":" + Type + ":" + ("" + value)
-    radio.sendString(message_to_send)
+    // radio.send_string(message_to_send)
+    radio.sendBuffer(encrypt_message(message_to_send))
     serial.writeLine("" + message_to_send + ":sent")
     basic.clearScreen()
 }
@@ -118,7 +154,7 @@ function is_message_bad(receivedString: string): boolean {
 }
 
 //  Callback function on recieved wireless data
-radio.onReceivedString(function on_received_string(receivedString: string) {
+function on_received_string(receivedString: string) {
     
     if ([0, 1].indexOf(verbosity_level) >= 0) {
         basic.showIcon(IconNames.SmallDiamond)
@@ -135,7 +171,8 @@ radio.onReceivedString(function on_received_string(receivedString: string) {
             //  Check whether we've recently seen this data
             if (check_last_message_time(received_message_device_id, received_message_value_type) == 1) {
                 received_messages.push("" + received_message_device_id + ":" + received_message_value_type + "=" + ("" + input.runningTime()))
-                radio.sendString(receivedString)
+                // radio.send_string(receivedString)
+                radio.sendBuffer(encrypt_message(receivedString))
                 serial.writeLine("" + receivedString + ":forward")
                 if ([0, 1].indexOf(verbosity_level) >= 0) {
                     basic.showIcon(IconNames.Yes)
@@ -160,6 +197,11 @@ radio.onReceivedString(function on_received_string(receivedString: string) {
     }
     
     basic.clearScreen()
+}
+
+// radio.on_received_string(on_received_string)
+radio.onReceivedBuffer(function on_received_buffer(receivedBuffer: Buffer) {
+    on_received_string(decrypt_message(receivedBuffer))
 })
 //  Split out the type from <id>:<type>:<value>
 function get_message_value_type(message: string): string {
@@ -207,9 +249,8 @@ let time_since_message = 0
 let message_received_time = 0
 let message_to_send = ""
 let received_messages : string[] = []
-received_messages = []
 led.setBrightness(128)
-radio.setGroup(1)
+radio.setGroup(172)
 radio.setTransmitPower(7)
 serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
 basic.showString("ID " + ("" + DEVICE_ID))
