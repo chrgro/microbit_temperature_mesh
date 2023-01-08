@@ -112,20 +112,26 @@ function send_message(Type: string, value: number) {
 //  Return 0 if we should not forward this message, 1 if we should forward.
 function check_last_message_time(received_device_id: number, received_value_type: string): number {
     let running_time: number;
+    let remove_idx: number;
     
-    serial.writeLine("# Checking for last recieved time for device_id " + ("" + received_device_id) + " and type " + received_value_type)
+    serial.writeLine("# Checking for last recieved time (limit " + ("" + TX_FLOOD_CONTROL_MS) + ") for device_id " + ("" + received_device_id) + " and type " + received_value_type)
     for (let received_message of received_messages) {
         if (received_message.includes("" + ("" + received_device_id) + ":" + received_value_type + "=")) {
             serial.writeLine("# Found matching previous id+type: " + received_message)
             message_received_time = get_message_received_time(received_message)
             running_time = input.runningTime()
             time_since_message = running_time - message_received_time
-            if (time_since_message < 540000) {
+            if (time_since_message < TX_FLOOD_CONTROL_MS) {
                 serial.writeLine("# Very recent match, current time was " + ("" + running_time) + " and time since msg " + ("" + time_since_message))
                 return 0
             } else {
                 serial.writeLine("# Only an old match, removing it and forwarding")
-                received_messages.removeAt(_py.py_array_index(received_messages, received_message))
+                remove_idx = _py.py_array_index(received_messages, received_message)
+                if (remove_idx < 0) {
+                    serial.writeLine("# INTERNAL ERROR: Didn't find line to remove!")
+                }
+                
+                received_messages.removeAt(remove_idx)
                 return 1
             }
             
@@ -275,6 +281,8 @@ led.setBrightness(128)
 radio.setGroup(194)
 radio.setTransmitPower(7)
 serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
+let TX_INTERVAL_MS = 10 * 60 * 1000
+let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
 basic.showIcon(IconNames.Square)
 basic.showString("Temp")

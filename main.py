@@ -98,7 +98,7 @@ def send_message(Type: str, value: number):
 # Return 0 if we should not forward this message, 1 if we should forward.
 def check_last_message_time(received_device_id: number, received_value_type: str):
     global message_received_time, time_since_message
-    serial.write_line("# Checking for last recieved time for device_id " + str(received_device_id) + " and type "+received_value_type)
+    serial.write_line("# Checking for last recieved time (limit "+str(TX_FLOOD_CONTROL_MS)+") for device_id " + str(received_device_id) + " and type "+received_value_type)
     for received_message in received_messages:
         if received_message.includes("" + str(received_device_id) + ":" + received_value_type + "="):
             serial.write_line("# Found matching previous id+type: " + received_message)
@@ -106,12 +106,15 @@ def check_last_message_time(received_device_id: number, received_value_type: str
             message_received_time = get_message_received_time(received_message)
             running_time = input.running_time() 
             time_since_message = running_time - message_received_time
-            if time_since_message < 540000:
+            if time_since_message < TX_FLOOD_CONTROL_MS:
                 serial.write_line("# Very recent match, current time was " + str(running_time) +" and time since msg "+str(time_since_message))
                 return 0
             else:
                 serial.write_line("# Only an old match, removing it and forwarding")
-                received_messages.remove_at(received_messages.index(received_message))
+                remove_idx = received_messages.index(received_message)
+                if remove_idx < 0:
+                    serial.write_line("# INTERNAL ERROR: Didn't find line to remove!")
+                received_messages.remove_at(remove_idx)
                 return 1
     serial.write_line("# Found no previous match of this id+type")
     return 1
@@ -221,6 +224,9 @@ led.set_brightness(128)
 radio.set_group(194)
 radio.set_transmit_power(7)
 serial.write_line("# Powered on, with ID: "+  str(DEVICE_ID))
+
+TX_INTERVAL_MS = 10*60*1000
+TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
 
 basic.show_string("ID " + str(DEVICE_ID))
 basic.show_icon(IconNames.SQUARE)
