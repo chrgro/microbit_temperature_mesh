@@ -1,6 +1,6 @@
 # DEVICE ID
 # CHANGE FOR EVERY NEW DEVICE!
-DEVICE_ID = 2
+DEVICE_ID = 4
 
 # Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
@@ -10,8 +10,18 @@ def read_temp():
 
 # Encryption key, must be 19 bytes
 key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-    
+
+# Encryption is a simple XOR, with keysize equal to datasize,
+# 19 bytes. This is equally safe as any other block cipher.
+# The block mode is CBC, with an 8 bit block size and thus
+# 8 bit initialization vector (IV). It at least reduces the odds
+# of repeat messages, but there will be some of them (every 256th
+# message with the same plaintext will then have same ciphertext).
+# We could use a bigger block size, the code just gets a tiny bit
+# more complicated and we lose plaintext capacity.
 def encrypt_message(message: str):
+    # Pad message with a slot of IV, and enough spaces
+    # on the end to always make it at least 19 bytes.
     padded_message = str(" "+message+"                   ")
     ciphertext = bytearray(19)
     iv = randint(0, 255)
@@ -24,19 +34,14 @@ def encrypt_message(message: str):
 
 def decrypt_message(message: Buffer):
     padded_plaintext = ""
-    # 19 bytes + NULL for string termination
+    # 19 bytes for the buffer
     padded_plain_buffers = bytearray(19)
     mod_v = message[0]
     for i in range(len(key)):
         decrypted = (message[i] ^ mod_v) ^ key[i]
-        #serial.write_line("Ciphertext "+ str(message[i])+" mod_v "+str(mod_v)+ " key "+key[i])
         padded_plain_buffers[i] = decrypted
-        #serial.write_line("decrypted single: "+str(decrypted) + " decrypted arr: "+ str(padded_plain_buffers[i]))
-
         mod_v = message[i]
-        pass
     s = padded_plain_buffers.to_string()
-    #serial.write_line("Full string: "+s)
     return str(s)[1:].strip()
 
 
@@ -83,8 +88,8 @@ def send_message(Type: str, value: number):
     if verbosity_level in [0, 1]:
         basic.show_icon(IconNames.DUCK)
     message_to_send = "" + str(DEVICE_ID) + ":" + Type + ":" + str(value)
-    #radio.send_string(message_to_send)
-    radio.send_buffer(encrypt_message(message_to_send))
+    #radio.send_string(message_to_send) # Unencrypted
+    radio.send_buffer(encrypt_message(message_to_send)) # Encrypted
     serial.write_line("" + message_to_send + ":sent")
     basic.clear_screen()
 
@@ -155,8 +160,10 @@ def on_received_string(receivedString : str):
             # Check whether we've recently seen this data
             if check_last_message_time(received_message_device_id, received_message_value_type) == 1:
                 received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
-                #radio.send_string(receivedString)
-                radio.send_buffer(encrypt_message(receivedString))
+                # Tiny random pause before forwarding, to reduce collision odds
+                basic.pause(randint(0, 100))
+                #radio.send_string(receivedString) # Unencrypted
+                radio.send_buffer(encrypt_message(receivedString)) # Encrypted
                 serial.write_line("" + receivedString + ":forward")
                 if verbosity_level in [0, 1]:
                     basic.show_icon(IconNames.YES)
@@ -169,13 +176,13 @@ def on_received_string(receivedString : str):
             if verbosity_level in [0, 1]:
                 basic.show_icon(IconNames.NO)
     basic.clear_screen()
-#radio.on_received_string(on_received_string)
 
 def on_received_buffer(receivedBuffer):
     decrypted_msg = decrypt_message(receivedBuffer)
     on_received_string(decrypted_msg)
 
-radio.on_received_buffer(on_received_buffer)
+#radio.on_received_string(on_received_string) # Unencrypted
+radio.on_received_buffer(on_received_buffer) # Encrypted
 
 # Split out the type from <id>:<type>:<value>
 def get_message_value_type(message: str):

@@ -1,6 +1,6 @@
 //  DEVICE ID
 //  CHANGE FOR EVERY NEW DEVICE!
-let DEVICE_ID = 2
+let DEVICE_ID = 4
 //  Function to retrieve the temperature
 //  In the future, expand this to read from an external set_transmit_power
 //  instead of the internal microbit sensor
@@ -10,8 +10,18 @@ function read_temp(): number {
 
 //  Encryption key, must be 19 bytes
 let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+//  Encryption is a simple XOR, with keysize equal to datasize,
+//  19 bytes. This is equally safe as any other block cipher.
+//  The block mode is CBC, with an 8 bit block size and thus
+//  8 bit initialization vector (IV). It at least reduces the odds
+//  of repeat messages, but there will be some of them (every 256th
+//  message with the same plaintext will then have same ciphertext).
+//  We could use a bigger block size, the code just gets a tiny bit
+//  more complicated and we lose plaintext capacity.
 function encrypt_message(message: string): Buffer {
     let char: number;
+    //  Pad message with a slot of IV, and enough spaces
+    //  on the end to always make it at least 19 bytes.
     let padded_message = "" + (" " + message + "                   ")
     let ciphertext = control.createBuffer(19)
     let iv = randint(0, 255)
@@ -27,19 +37,15 @@ function encrypt_message(message: string): Buffer {
 function decrypt_message(message: Buffer): string {
     let decrypted: number;
     let padded_plaintext = ""
-    //  19 bytes + NULL for string termination
+    //  19 bytes for the buffer
     let padded_plain_buffers = control.createBuffer(19)
     let mod_v = message[0]
     for (let i = 0; i < key.length; i++) {
         decrypted = message[i] ^ mod_v ^ key[i]
-        // serial.write_line("Ciphertext "+ str(message[i])+" mod_v "+str(mod_v)+ " key "+key[i])
         padded_plain_buffers[i] = decrypted
-        // serial.write_line("decrypted single: "+str(decrypted) + " decrypted arr: "+ str(padded_plain_buffers[i]))
         mod_v = message[i]
-        
     }
     let s = padded_plain_buffers.toString()
-    // serial.write_line("Full string: "+s)
     return _py.py_string_strip(("" + s).slice(1))
 }
 
@@ -94,8 +100,9 @@ function send_message(Type: string, value: number) {
     }
     
     message_to_send = "" + ("" + DEVICE_ID) + ":" + Type + ":" + ("" + value)
-    // radio.send_string(message_to_send)
+    // radio.send_string(message_to_send) # Unencrypted
     radio.sendBuffer(encrypt_message(message_to_send))
+    //  Encrypted
     serial.writeLine("" + message_to_send + ":sent")
     basic.clearScreen()
 }
@@ -181,8 +188,11 @@ function on_received_string(receivedString: string) {
             //  Check whether we've recently seen this data
             if (check_last_message_time(received_message_device_id, received_message_value_type) == 1) {
                 received_messages.push("" + received_message_device_id + ":" + received_message_value_type + "=" + ("" + input.runningTime()))
-                // radio.send_string(receivedString)
+                //  Tiny random pause before forwarding, to reduce collision odds
+                basic.pause(randint(0, 100))
+                // radio.send_string(receivedString) # Unencrypted
                 radio.sendBuffer(encrypt_message(receivedString))
+                //  Encrypted
                 serial.writeLine("" + receivedString + ":forward")
                 if ([0, 1].indexOf(verbosity_level) >= 0) {
                     basic.showIcon(IconNames.Yes)
@@ -209,11 +219,12 @@ function on_received_string(receivedString: string) {
     basic.clearScreen()
 }
 
-// radio.on_received_string(on_received_string)
+// radio.on_received_string(on_received_string) # Unencrypted
 radio.onReceivedBuffer(function on_received_buffer(receivedBuffer: Buffer) {
     let decrypted_msg = decrypt_message(receivedBuffer)
     on_received_string(decrypted_msg)
 })
+//  Encrypted
 //  Split out the type from <id>:<type>:<value>
 function get_message_value_type(message: string): string {
     try {
