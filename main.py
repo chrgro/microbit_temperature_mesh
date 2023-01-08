@@ -113,11 +113,19 @@ def check_last_message_time(received_device_id: number, received_value_type: str
 
 # Filter bad messages
 def is_message_bad(receivedString : str):
+    # Reject any non-ASCII messages
+    for c in receivedString:
+        charcode = c.char_code_at(0)
+        if not (32 <= charcode <= 126):
+            serial.write_line("# Error, rejecting message due to non-ASCII char (outside 32-126), likely decrypt failure, charcode: "+str(charcode))
+            return True
+
     parts = receivedString.split(":")
     # Reject any msg without 3 parts
     if len(parts) != 3:
         serial.write_line("# Error, rejecting message for not having 3 ':' separated parts: "+receivedString)
         return True
+
     # Reject messages of type different a small group
     if parts[1] not in ["t", "h", "c", "v", "n", "a", "b", "c"]:
         serial.write_line("# Error, rejecting message not having an expected type "+receivedString)
@@ -127,7 +135,7 @@ def is_message_bad(receivedString : str):
     if Get_message_value(receivedString) == FAILURE_VALUE:
         serial.write_line("# Error, rejecting message not having a number value "+receivedString)
         return True
-        
+
     return False
 
 # Callback function on recieved wireless data
@@ -164,7 +172,8 @@ def on_received_string(receivedString : str):
 #radio.on_received_string(on_received_string)
 
 def on_received_buffer(receivedBuffer):
-    on_received_string(decrypt_message(receivedBuffer))
+    decrypted_msg = decrypt_message(receivedBuffer)
+    on_received_string(decrypted_msg)
 
 radio.on_received_buffer(on_received_buffer)
 
@@ -202,7 +211,7 @@ message_received_time = 0
 message_to_send = ""
 received_messages: List[str] = []
 led.set_brightness(128)
-radio.set_group(172)
+radio.set_group(194)
 radio.set_transmit_power(7)
 serial.write_line("# Powered on, with ID: "+  str(DEVICE_ID))
 

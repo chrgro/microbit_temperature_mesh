@@ -131,6 +131,16 @@ function check_last_message_time(received_device_id: number, received_value_type
 
 //  Filter bad messages
 function is_message_bad(receivedString: string): boolean {
+    let charcode: number;
+    //  Reject any non-ASCII messages
+    for (let c of receivedString) {
+        charcode = c.charCodeAt(0)
+        if (!(32 <= charcode && charcode <= 126)) {
+            serial.writeLine("# Error, rejecting message due to non-ASCII char (outside 32-126), likely decrypt failure, charcode: " + ("" + charcode))
+            return true
+        }
+        
+    }
     let parts = _py.py_string_split(receivedString, ":")
     //  Reject any msg without 3 parts
     if (parts.length != 3) {
@@ -201,7 +211,8 @@ function on_received_string(receivedString: string) {
 
 // radio.on_received_string(on_received_string)
 radio.onReceivedBuffer(function on_received_buffer(receivedBuffer: Buffer) {
-    on_received_string(decrypt_message(receivedBuffer))
+    let decrypted_msg = decrypt_message(receivedBuffer)
+    on_received_string(decrypted_msg)
 })
 //  Split out the type from <id>:<type>:<value>
 function get_message_value_type(message: string): string {
@@ -250,7 +261,7 @@ let message_received_time = 0
 let message_to_send = ""
 let received_messages : string[] = []
 led.setBrightness(128)
-radio.setGroup(172)
+radio.setGroup(194)
 radio.setTransmitPower(7)
 serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
 basic.showString("ID " + ("" + DEVICE_ID))
