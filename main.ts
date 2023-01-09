@@ -18,25 +18,28 @@ let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 //  message with the same plaintext will then have same ciphertext).
 //  We could use a bigger block size, the code just gets a tiny bit
 //  more complicated and we lose plaintext capacity.
-function encrypt_message(message: string): Buffer {
+function encrypt_message(message: Buffer): Buffer {
     let char: number;
-    //  Pad message with a slot of IV, and enough spaces
-    //  on the end to always make it at least 19 bytes.
-    let padded_message = "" + (" " + message + "                   ")
     let ciphertext = control.createBuffer(19)
     let iv = randint(0, 255)
     let mod_v = iv
-    for (let i = 0; i < key.length; i++) {
-        char = padded_message.charCodeAt(i)
+    for (let i = 0; i < ciphertext.length; i++) {
+        //  Pad message with a slot of IV, and enough spaces
+        //  on the end to always make it at least 19 bytes.
+        if (i == 0 || i - 1 >= message.length) {
+            char = 0
+        } else {
+            char = message[i - 1]
+        }
+        
         ciphertext[i] = char ^ mod_v ^ key[i]
         mod_v = ciphertext[i]
     }
     return ciphertext
 }
 
-function decrypt_message(message: Buffer): string {
+function decrypt_message(message: Buffer): Buffer {
     let decrypted: number;
-    let padded_plaintext = ""
     //  19 bytes for the buffer
     let padded_plain_buffers = control.createBuffer(19)
     let mod_v = message[0]
@@ -45,28 +48,7 @@ function decrypt_message(message: Buffer): string {
         padded_plain_buffers[i] = decrypted
         mod_v = message[i]
     }
-    let s = padded_plain_buffers.toString()
-    return _py.py_string_strip(("" + s).slice(1))
-}
-
-//  From a message <id>:<type>:<value>, extract the
-//  device id
-//  Return ID 0 on any errors
-//  Accept only IDs between 1 and 99
-function get_message_device_id(message: string): number {
-    let t: number;
-    try {
-        t = parseInt(_py.py_string_split(message, ":")[0])
-        if (!(0 < t && t < 100)) {
-            return 0
-        }
-        
-        return t
-    }
-    catch (_) {
-        return 0
-    }
-    
+    return padded_plain_buffers.slice(1)
 }
 
 //  On press button A, force a value send
@@ -93,17 +75,20 @@ input.onButtonPressed(Button.B, function on_button_pressed_b() {
     
 })
 //  Wrapper function to send messages out on BLE
-function send_message(Type: string, value: number) {
-    
+function send_message(datatype: string, value: number) {
     if ([0, 1].indexOf(verbosity_level) >= 0) {
         basic.showIcon(IconNames.Duck)
     }
     
-    message_to_send = "" + ("" + DEVICE_ID) + ":" + Type + ":" + ("" + value)
-    // radio.send_string(message_to_send) # Unencrypted
+    //  Pack the data
+    let message_to_send = control.createBuffer(18)
+    message_to_send.fill(1)
+    message_to_send[0] = DEVICE_ID
+    message_to_send[1] = datatype.charCodeAt(0)
+    message_to_send.setNumber(NumberFormat.Float32LE, 2, value)
     radio.sendBuffer(encrypt_message(message_to_send))
     //  Encrypted
-    serial.writeLine("" + message_to_send + ":sent")
+    serial.writeLine(buffer_to_str(message_to_send) + ":sent")
     basic.clearScreen()
 }
 
@@ -143,69 +128,82 @@ function check_last_message_time(received_device_id: number, received_value_type
 }
 
 //  Filter bad messages
-function is_message_bad(receivedString: string): boolean {
-    let charcode: number;
+function is_message_bad(receivedBuffer: Buffer): boolean {
     //  Reject any non-ASCII messages
-    for (let c of receivedString) {
-        charcode = c.charCodeAt(0)
-        if (!(32 <= charcode && charcode <= 126)) {
-            serial.writeLine("# Error, rejecting message due to non-ASCII char (outside 32-126), likely decrypt failure, charcode: " + ("" + charcode))
-            return true
-        }
-        
-    }
-    let parts = _py.py_string_split(receivedString, ":")
-    //  Reject any msg without 3 parts
-    if (parts.length != 3) {
-        serial.writeLine("# Error, rejecting message for not having 3 ':' separated parts: " + receivedString)
+    let datatype = get_message_value_type(receivedBuffer)
+    let charcode = datatype.charCodeAt(0)
+    if (!(32 <= charcode && charcode <= 126)) {
+        serial.writeLine("# Error, rejecting message due to non-ASCII buffer type (outside 32-126), likely decrypt failure, charcode: " + ("" + charcode))
         return true
     }
     
     //  Reject messages of type different a small group
-    if (["t", "h", "c", "v", "n", "a", "b", "c"].indexOf(parts[1]) < 0) {
-        serial.writeLine("# Error, rejecting message not having an expected type " + receivedString)
+    if (["t", "h", "c", "v", "n", "a", "b", "c"].indexOf(get_message_value_type(receivedBuffer)) < 0) {
+        serial.writeLine("# Error, rejecting message not having an expected type :" + get_message_value_type(receivedBuffer))
         return true
     }
     
     //  Reject messages that hit the throw condition, i.e. its not a valid number
-    if (Get_message_value(receivedString) == FAILURE_VALUE) {
-        serial.writeLine("# Error, rejecting message not having a number value " + receivedString)
+    if (get_message_value(receivedBuffer) == FAILURE_VALUE) {
+        serial.writeLine("# Error, rejecting message not having a valid floating point ")
         return true
     }
     
     return false
 }
 
+//  Append own device ID to forwarded message
+function append_forwarded_device_id(messageBuffer: Buffer) {
+    //  Loop all bytes to look for the first free location
+    for (let i = 6; i < 18; i++) {
+        if (messageBuffer[i] == 0) {
+            messageBuffer[i] = DEVICE_ID
+            return
+        }
+        
+    }
+    //  If there are no free slots, just keep the buffer unchanged
+    return
+}
+
 //  Callback function on recieved wireless data
-function on_received_string(receivedString: string) {
+function decode_buffer(receivedBuffer: Buffer) {
     
     if ([0, 1].indexOf(verbosity_level) >= 0) {
         basic.showIcon(IconNames.SmallDiamond)
     }
     
-    if (is_message_bad(receivedString)) {
+    serial.writeString(`# Decoding buffer:
+# `)
+    for (let i = 0; i < receivedBuffer.length; i++) {
+        serial.writeString("" + receivedBuffer[i] + " ")
+    }
+    serial.writeLine("")
+    if (is_message_bad(receivedBuffer)) {
         
     } else {
         //  Extract device ID and value type from the incoming data
-        received_message_device_id = get_message_device_id(receivedString)
-        received_message_value_type = get_message_value_type(receivedString)
+        received_message_device_id = get_message_device_id(receivedBuffer)
+        received_message_value_type = get_message_value_type(receivedBuffer)
         //  Check if its our own data coming back to us
-        if (DEVICE_ID != received_message_device_id) {
+        if (true || DEVICE_ID != received_message_device_id) {
             //  Check whether we've recently seen this data
             if (check_last_message_time(received_message_device_id, received_message_value_type) == 1) {
                 received_messages.push("" + received_message_device_id + ":" + received_message_value_type + "=" + ("" + input.runningTime()))
                 //  Tiny random pause before forwarding, to reduce collision odds
                 basic.pause(randint(0, 100))
-                // radio.send_string(receivedString) # Unencrypted
-                radio.sendBuffer(encrypt_message(receivedString))
+                //  Append my own device ID to the message
+                append_forwarded_device_id(receivedBuffer)
+                //  Send off the message again
+                radio.sendBuffer(encrypt_message(receivedBuffer))
                 //  Encrypted
-                serial.writeLine("" + receivedString + ":forward")
+                serial.writeLine(buffer_to_str(receivedBuffer) + ":forward")
                 if ([0, 1].indexOf(verbosity_level) >= 0) {
                     basic.showIcon(IconNames.Yes)
                 }
                 
             } else {
-                serial.writeLine("" + receivedString + ":reject_seen_recently")
+                serial.writeLine(buffer_to_str(receivedBuffer) + ":reject_seen_recently")
                 if ([0, 1].indexOf(verbosity_level) >= 0) {
                     basic.showIcon(IconNames.No)
                 }
@@ -213,7 +211,7 @@ function on_received_string(receivedString: string) {
             }
             
         } else {
-            serial.writeLine("" + receivedString + ":reject_own_id")
+            serial.writeLine(buffer_to_str(receivedBuffer) + ":reject_own_id")
             if ([0, 1].indexOf(verbosity_level) >= 0) {
                 basic.showIcon(IconNames.No)
             }
@@ -225,16 +223,44 @@ function on_received_string(receivedString: string) {
     basic.clearScreen()
 }
 
+//  Buffer layout:
+//  Byte 0: device id
+//  Byte 1: Data type
+//  Byte 2-5: value
+//  Byte 6-16: device id of forwarding nodes
+//  Byte 17: Either 0 or ascii > if we ran out of space
+function buffer_to_str(buf: Buffer) {
+    let forwarded_device_id: number;
+    let buffer_device_id = get_message_device_id(buf)
+    let buffer_type = get_message_value_type(buf)
+    let buffer_value = buf.getNumber(NumberFormat.Float32LE, 2)
+    let buffer_sent_via = " "
+    for (let i = 6; i < 18; i++) {
+        if (buf[i] == 0) {
+            break
+        }
+        
+        forwarded_device_id = buf.getNumber(NumberFormat.Int8LE, i)
+        buffer_sent_via += "|" + ("" + forwarded_device_id)
+    }
+    return "" + buffer_device_id + ":" + ("" + buffer_type) + ":" + ("" + buffer_value) + buffer_sent_via
+}
+
 // radio.on_received_string(on_received_string) # Unencrypted
 radio.onReceivedBuffer(function on_received_buffer(receivedBuffer: Buffer) {
     let decrypted_msg = decrypt_message(receivedBuffer)
-    on_received_string(decrypted_msg)
+    decode_buffer(decrypted_msg)
 })
 //  Encrypted
 //  Split out the type from <id>:<type>:<value>
-function get_message_value_type(message: string): string {
+function get_message_value_type(message: Buffer): string {
+    let single_byte: Buffer;
+    let type_str: string;
     try {
-        return _py.py_string_split(message, ":")[1]
+        single_byte = control.createBuffer(1)
+        single_byte[0] = message[1]
+        type_str = single_byte.toString()
+        return type_str
     }
     catch (_) {
         //  This is after validation of message types, should
@@ -244,11 +270,31 @@ function get_message_value_type(message: string): string {
     
 }
 
+//  From a message buffer, extract the
+//  device id
+//  Return ID 0 on any errors
+//  Accept only IDs between 1 and 99
+function get_message_device_id(message: Buffer): number {
+    let t: number;
+    try {
+        t = message.getNumber(NumberFormat.Int8LE, 0)
+        if (!(0 < t && t < 100)) {
+            return 0
+        }
+        
+        return t
+    }
+    catch (_) {
+        return 0
+    }
+    
+}
+
 //  Split out the value from <id>:<type>:<value>
-function Get_message_value(message: string): number {
+function get_message_value(message: Buffer): number {
     let v: number;
     try {
-        v = parseInt(_py.py_string_split(message, ":")[2])
+        v = message.getNumber(NumberFormat.Float32LE, 2)
         return v
     }
     catch (_) {
@@ -258,9 +304,9 @@ function Get_message_value(message: string): number {
 }
 
 //  Split out the recieved time from <id>:<type>=<timestamp>
-function get_message_received_time(message3: string): number {
+function get_message_received_time(message: string): number {
     try {
-        return parseInt(_py.py_string_split(message3, "=")[1])
+        return parseInt(_py.py_string_split(message, "=")[1])
     }
     catch (_) {
         return 0
@@ -275,7 +321,6 @@ let received_message_value_type = ""
 let received_message_device_id = -1
 let time_since_message = 0
 let message_received_time = 0
-let message_to_send = ""
 let received_messages : string[] = []
 led.setBrightness(128)
 radio.setGroup(194)
@@ -284,8 +329,8 @@ serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
 let TX_INTERVAL_MS = 10 * 60 * 1000
 let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
-basic.showIcon(IconNames.Square)
-basic.showString("Temp")
+// basic.show_icon(IconNames.SQUARE)
+// basic.show_string("Temp")
 basic.clearScreen()
 //  Keep printing the current temp
 basic.forever(function on_forever_show_screen() {

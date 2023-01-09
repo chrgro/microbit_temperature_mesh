@@ -19,21 +19,22 @@ key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 # message with the same plaintext will then have same ciphertext).
 # We could use a bigger block size, the code just gets a tiny bit
 # more complicated and we lose plaintext capacity.
-def encrypt_message(message: str):
-    # Pad message with a slot of IV, and enough spaces
-    # on the end to always make it at least 19 bytes.
-    padded_message = str(" "+message+"                   ")
+def encrypt_message(message: Buffer):
     ciphertext = bytearray(19)
     iv = randint(0, 255)
     mod_v = iv
-    for i in range(len(key)):
-        char = padded_message.char_code_at(i)
+    for i in range(len(ciphertext)):
+        # Pad message with a slot of IV, and enough spaces
+        # on the end to always make it at least 19 bytes.
+        if i == 0 or (i-1) >= len(message):
+            char = 0
+        else:
+            char = message[i-1]
         ciphertext[i] = (char ^ mod_v) ^ key[i]
         mod_v = ciphertext[i]
     return ciphertext
 
 def decrypt_message(message: Buffer):
-    padded_plaintext = ""
     # 19 bytes for the buffer
     padded_plain_buffers = bytearray(19)
     mod_v = message[0]
@@ -41,22 +42,8 @@ def decrypt_message(message: Buffer):
         decrypted = (message[i] ^ mod_v) ^ key[i]
         padded_plain_buffers[i] = decrypted
         mod_v = message[i]
-    s = padded_plain_buffers.to_string()
-    return str(s)[1:].strip()
+    return padded_plain_buffers[1:]
 
-
-# From a message <id>:<type>:<value>, extract the
-# device id
-# Return ID 0 on any errors
-# Accept only IDs between 1 and 99
-def get_message_device_id(message: str):
-    try:
-        t = parseInt(message.split(":")[0])
-        if not (0 < t < 100):
-            return 0
-        return t
-    except:
-        return 0
 
 # On press button A, force a value send
 def on_button_pressed_a():
@@ -83,14 +70,19 @@ input.on_button_pressed(Button.B, on_button_pressed_b)
 
 
 # Wrapper function to send messages out on BLE
-def send_message(Type: str, value: number):
-    global message_to_send
+def send_message(datatype: str, value: number):
     if verbosity_level in [0, 1]:
         basic.show_icon(IconNames.DUCK)
-    message_to_send = "" + str(DEVICE_ID) + ":" + Type + ":" + str(value)
-    #radio.send_string(message_to_send) # Unencrypted
+
+    # Pack the data
+    message_to_send = bytearray(18)
+    message_to_send.fill(1)
+    message_to_send[0] = DEVICE_ID
+    message_to_send[1] = datatype.char_code_at(0)
+    message_to_send.setNumber(NumberFormat.FLOAT32_LE, 2, value)
+
     radio.send_buffer(encrypt_message(message_to_send)) # Encrypted
-    serial.write_line("" + message_to_send + ":sent")
+    serial.write_line(buffer_to_str(message_to_send) + ":sent")
     basic.clear_screen()
 
 # For an incoming message with id and type, check if we have reject_seen_recently
@@ -120,94 +112,140 @@ def check_last_message_time(received_device_id: number, received_value_type: str
     return 1
 
 # Filter bad messages
-def is_message_bad(receivedString : str):
+def is_message_bad(receivedBuffer : Buffer):
     # Reject any non-ASCII messages
-    for c in receivedString:
-        charcode = c.char_code_at(0)
-        if not (32 <= charcode <= 126):
-            serial.write_line("# Error, rejecting message due to non-ASCII char (outside 32-126), likely decrypt failure, charcode: "+str(charcode))
-            return True
-
-    parts = receivedString.split(":")
-    # Reject any msg without 3 parts
-    if len(parts) != 3:
-        serial.write_line("# Error, rejecting message for not having 3 ':' separated parts: "+receivedString)
+    datatype = get_message_value_type(receivedBuffer)
+    charcode = datatype.char_code_at(0)
+    if not (32 <= charcode <= 126):
+        serial.write_line("# Error, rejecting message due to non-ASCII buffer type (outside 32-126), likely decrypt failure, charcode: "+str(charcode))
         return True
 
     # Reject messages of type different a small group
-    if parts[1] not in ["t", "h", "c", "v", "n", "a", "b", "c"]:
-        serial.write_line("# Error, rejecting message not having an expected type "+receivedString)
+    if get_message_value_type(receivedBuffer) not in ["t", "h", "c", "v", "n", "a", "b", "c"]:
+        serial.write_line("# Error, rejecting message not having an expected type :"+get_message_value_type(receivedBuffer))
         return True
 
     # Reject messages that hit the throw condition, i.e. its not a valid number
-    if Get_message_value(receivedString) == FAILURE_VALUE:
-        serial.write_line("# Error, rejecting message not having a number value "+receivedString)
+    if get_message_value(receivedBuffer) == FAILURE_VALUE:
+        serial.write_line("# Error, rejecting message not having a valid floating point ")
         return True
 
     return False
 
+# Append own device ID to forwarded message
+def append_forwarded_device_id(messageBuffer: Buffer):
+    # Loop all bytes to look for the first free location
+    for i in range(6, 18):
+        if messageBuffer[i] == 0:
+            messageBuffer[i] = DEVICE_ID
+            return
+    # If there are no free slots, just keep the buffer unchanged
+    return
+
 # Callback function on recieved wireless data
-def on_received_string(receivedString : str):
+def decode_buffer(receivedBuffer : Buffer):
     global received_message_device_id, received_message_value_type, verbosity_level
     if verbosity_level in [0, 1]:
         basic.show_icon(IconNames.SMALL_DIAMOND)
 
-    if is_message_bad(receivedString):
+    serial.write_string("# Decoding buffer:\n# ")
+    for i in range(receivedBuffer.length):
+        serial.write_string(str(receivedBuffer[i]) + " ")
+    serial.write_line("")
+
+    if is_message_bad(receivedBuffer):
         pass
     else:
         # Extract device ID and value type from the incoming data
-        received_message_device_id = get_message_device_id(receivedString)
-        received_message_value_type = get_message_value_type(receivedString)
+        received_message_device_id = get_message_device_id(receivedBuffer)
+        received_message_value_type = get_message_value_type(receivedBuffer)
         # Check if its our own data coming back to us
-        if DEVICE_ID != received_message_device_id:
+        if True or DEVICE_ID != received_message_device_id:
             # Check whether we've recently seen this data
             if check_last_message_time(received_message_device_id, received_message_value_type) == 1:
                 received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
                 # Tiny random pause before forwarding, to reduce collision odds
                 basic.pause(randint(0, 100))
-                #radio.send_string(receivedString) # Unencrypted
-                radio.send_buffer(encrypt_message(receivedString)) # Encrypted
-                serial.write_line("" + receivedString + ":forward")
+                # Append my own device ID to the message
+                append_forwarded_device_id(receivedBuffer)
+                # Send off the message again
+                radio.send_buffer(encrypt_message(receivedBuffer)) # Encrypted
+                serial.write_line(buffer_to_str(receivedBuffer) + ":forward")
                 if verbosity_level in [0, 1]:
                     basic.show_icon(IconNames.YES)
             else:
-                serial.write_line("" + receivedString + ":reject_seen_recently")
+                serial.write_line(buffer_to_str(receivedBuffer) + ":reject_seen_recently")
                 if verbosity_level in [0, 1]:
                     basic.show_icon(IconNames.NO)
         else:
-            serial.write_line("" + receivedString + ":reject_own_id")
+            serial.write_line(buffer_to_str(receivedBuffer) + ":reject_own_id")
             if verbosity_level in [0, 1]:
                 basic.show_icon(IconNames.NO)
     basic.clear_screen()
 
+# Buffer layout:
+# Byte 0: device id
+# Byte 1: Data type
+# Byte 2-5: value
+# Byte 6-16: device id of forwarding nodes
+# Byte 17: Either 0 or ascii > if we ran out of space
+def buffer_to_str(buf : Buffer):
+    buffer_device_id = get_message_device_id(buf)
+    buffer_type = get_message_value_type(buf)
+    buffer_value = buf.get_number(NumberFormat.FLOAT32_LE, 2)
+    buffer_sent_via = " "
+    for i in range(6, 18):
+        if buf[i] == 0:
+            break
+        forwarded_device_id = buf.get_number(NumberFormat.INT8_LE, i)
+        buffer_sent_via += "|"+str(forwarded_device_id)
+    return str(buffer_device_id)+":"+str(buffer_type)+":"+str(buffer_value)+buffer_sent_via
+
+
 def on_received_buffer(receivedBuffer):
     decrypted_msg = decrypt_message(receivedBuffer)
-    on_received_string(decrypted_msg)
+    decode_buffer(decrypted_msg)
 
 #radio.on_received_string(on_received_string) # Unencrypted
 radio.on_received_buffer(on_received_buffer) # Encrypted
 
 # Split out the type from <id>:<type>:<value>
-def get_message_value_type(message: str):
+def get_message_value_type(message: Buffer):
     try:
-        return message.split(":")[1]
+        single_byte = bytearray(1)
+        single_byte[0] = message[1]
+        type_str = single_byte.to_string()
+        return type_str
     except:
         # This is after validation of message types, should
         # in theory this should be unreachable
         return "bad_type"
 
-# Split out the value from <id>:<type>:<value>
-def Get_message_value(message: str):
+# From a message buffer, extract the
+# device id
+# Return ID 0 on any errors
+# Accept only IDs between 1 and 99
+def get_message_device_id(message: Buffer):
     try:
-        v = parseInt(message.split(":")[2])
+        t = message.get_number(NumberFormat.INT8_LE, 0)
+        if not (0 < t < 100):
+            return 0
+        return t
+    except:
+        return 0
+
+# Split out the value from <id>:<type>:<value>
+def get_message_value(message: Buffer):
+    try:
+        v = message.get_number(NumberFormat.FLOAT32_LE, 2)
         return v
     except:
         return FAILURE_VALUE
 
 # Split out the recieved time from <id>:<type>=<timestamp>
-def get_message_received_time(message3: str):
+def get_message_received_time(message: str):
     try:
-        return int(message3.split("=")[1])
+        return int(message.split("=")[1])
     except:
         return 0
 
@@ -218,7 +256,6 @@ received_message_value_type = ""
 received_message_device_id = -1
 time_since_message = 0
 message_received_time = 0
-message_to_send = ""
 received_messages: List[str] = []
 led.set_brightness(128)
 radio.set_group(194)
@@ -229,8 +266,8 @@ TX_INTERVAL_MS = 10*60*1000
 TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
 
 basic.show_string("ID " + str(DEVICE_ID))
-basic.show_icon(IconNames.SQUARE)
-basic.show_string("Temp")
+#basic.show_icon(IconNames.SQUARE)
+#basic.show_string("Temp")
 basic.clear_screen()
 
 # Keep printing the current temp
