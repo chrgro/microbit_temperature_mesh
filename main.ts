@@ -1,6 +1,8 @@
 //  DEVICE ID
 //  CHANGE FOR EVERY NEW DEVICE!
 let DEVICE_ID = 4
+//  Encryption key, must be 19 bytes
+let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 //  Function to retrieve the temperature
 //  In the future, expand this to read from an external set_transmit_power
 //  instead of the internal microbit sensor
@@ -21,8 +23,6 @@ function read_temp(): number {
     
 }
 
-//  Encryption key, must be 19 bytes
-let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 //  Encryption is a simple XOR, with keysize equal to datasize,
 //  19 bytes. This is equally safe as any other block cipher.
 //  The block mode is CBC, with an 8 bit block size and thus
@@ -109,26 +109,24 @@ function send_message(datatype: string, value: number) {
 //  seen a message like it, and update the list as needed
 //  Return 0 if we should not forward this message, 1 if we should forward.
 function check_last_message_time(received_device_id: number, received_value_type: string): number {
+    let prev_seen_message: Buffer;
+    let message_received_time: number;
     let running_time: number;
-    let remove_idx: number;
+    let time_since_message: number;
     
     serial.writeLine("# Checking for last recieved time (limit " + ("" + TX_FLOOD_CONTROL_MS) + ") for device_id " + ("" + received_device_id) + " and type " + received_value_type)
-    for (let received_message of received_messages) {
-        if (received_message.includes("" + ("" + received_device_id) + ":" + received_value_type + "=")) {
-            message_received_time = get_message_received_time(received_message)
+    for (let i = 0; i < received_messages.length; i++) {
+        prev_seen_message = received_messages[i]
+        if (get_message_device_id(prev_seen_message) == received_device_id && get_message_value_type(prev_seen_message) == received_value_type) {
+            message_received_time = get_message_received_time(prev_seen_message)
             running_time = input.runningTime()
             time_since_message = running_time - message_received_time
-            if (time_since_message < TX_FLOOD_CONTROL_MS) {
+            if (0 < time_since_message && time_since_message < TX_FLOOD_CONTROL_MS) {
                 serial.writeLine("# Very recent match, current time was " + ("" + running_time) + " and time since msg " + ("" + time_since_message))
                 return 0
             } else {
                 serial.writeLine("# Only an old match, removing it and forwarding")
-                remove_idx = _py.py_array_index(received_messages, received_message)
-                if (remove_idx < 0) {
-                    serial.writeLine("# INTERNAL ERROR: Didn't find line to remove!")
-                }
-                
-                received_messages.removeAt(remove_idx)
+                received_messages.removeAt(i)
                 return 1
             }
             
@@ -181,6 +179,9 @@ function append_forwarded_device_id(messageBuffer: Buffer) {
 
 //  Callback function on recieved wireless data
 function decode_buffer(receivedBuffer: Buffer) {
+    let received_message_device_id: number;
+    let received_message_value_type: string;
+    let last_seen: Buffer;
     
     if ([0, 1].indexOf(verbosity_level) >= 0) {
         basic.showIcon(IconNames.SmallDiamond)
@@ -198,10 +199,14 @@ function decode_buffer(receivedBuffer: Buffer) {
         received_message_device_id = get_message_device_id(receivedBuffer)
         received_message_value_type = get_message_value_type(receivedBuffer)
         //  Check if its our own data coming back to us
-        if (DEVICE_ID != received_message_device_id) {
+        if (true || DEVICE_ID != received_message_device_id) {
             //  Check whether we've recently seen this data
             if (check_last_message_time(received_message_device_id, received_message_value_type) == 1) {
-                received_messages.push("" + received_message_device_id + ":" + received_message_value_type + "=" + ("" + input.runningTime()))
+                last_seen = control.createBuffer(6)
+                last_seen.setNumber(NumberFormat.Int8LE, 0, received_message_device_id)
+                last_seen[1] = received_message_value_type.charCodeAt(0)
+                last_seen.setNumber(NumberFormat.Float32LE, 2, input.runningTime())
+                received_messages.push(last_seen)
                 //  Tiny random pause before forwarding, to reduce collision odds
                 basic.pause(randint(0, 100))
                 //  Append my own device ID to the message
@@ -265,7 +270,6 @@ function buffer_to_json(buf: Buffer, action: string): string {
     return retstr
 }
 
-// radio.on_received_string(on_received_string) # Unencrypted
 radio.onReceivedBuffer(function on_received_buffer(receivedBuffer: Buffer) {
     let decrypted_msg = decrypt_message(receivedBuffer)
     decode_buffer(decrypted_msg)
@@ -322,25 +326,15 @@ function get_message_value(message: Buffer): number {
     
 }
 
-//  Split out the recieved time from <id>:<type>=<timestamp>
-function get_message_received_time(message: string): number {
-    try {
-        return parseInt(_py.py_string_split(message, "=")[1])
-    }
-    catch (_) {
-        return 0
-    }
-    
+//  Split out the recieved time from the buffer
+function get_message_received_time(prev_seen_message: Buffer): number {
+    return prev_seen_message.getNumber(NumberFormat.Float32LE, 2)
 }
 
 //  Initial setup and ID print
 let FAILURE_VALUE = -999
 let verbosity_level = 0
-let received_message_value_type = ""
-let received_message_device_id = -1
-let time_since_message = 0
-let message_received_time = 0
-let received_messages : string[] = []
+let received_messages : Buffer[] = []
 led.setBrightness(128)
 radio.setGroup(181)
 radio.setTransmitPower(7)
@@ -348,8 +342,6 @@ serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
 let TX_INTERVAL_MS = 10 * 60 * 1000
 let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
-// basic.show_icon(IconNames.SQUARE)
-// basic.show_string("Temp")
 basic.clearScreen()
 //  Keep printing the current temp
 basic.forever(function on_forever_show_screen() {

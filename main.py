@@ -2,6 +2,9 @@
 # CHANGE FOR EVERY NEW DEVICE!
 DEVICE_ID = 4
 
+# Encryption key, must be 19 bytes
+key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
 # Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
 # instead of the internal microbit sensor
@@ -15,9 +18,6 @@ def read_temp():
         return temp
     else:
         return input.temperature()
-
-# Encryption key, must be 19 bytes
-key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 
 # Encryption is a simple XOR, with keysize equal to datasize,
 # 19 bytes. This is equally safe as any other block cipher.
@@ -97,22 +97,20 @@ def send_message(datatype: str, value: number):
 # seen a message like it, and update the list as needed
 # Return 0 if we should not forward this message, 1 if we should forward.
 def check_last_message_time(received_device_id: number, received_value_type: str):
-    global message_received_time, time_since_message
+    global received_messages
     serial.write_line("# Checking for last recieved time (limit "+str(TX_FLOOD_CONTROL_MS)+") for device_id " + str(received_device_id) + " and type "+received_value_type)
-    for received_message in received_messages:
-        if received_message.includes("" + str(received_device_id) + ":" + received_value_type + "="):
-            message_received_time = get_message_received_time(received_message)
+    for i in range(len(received_messages)):
+        prev_seen_message : Buffer = received_messages[i]
+        if get_message_device_id(prev_seen_message) == received_device_id and get_message_value_type(prev_seen_message) == received_value_type:
+            message_received_time = get_message_received_time(prev_seen_message)
             running_time = input.running_time() 
             time_since_message = running_time - message_received_time
-            if time_since_message < TX_FLOOD_CONTROL_MS:
+            if 0 < time_since_message < TX_FLOOD_CONTROL_MS:
                 serial.write_line("# Very recent match, current time was " + str(running_time) +" and time since msg "+str(time_since_message))
                 return 0
             else:
                 serial.write_line("# Only an old match, removing it and forwarding")
-                remove_idx = received_messages.index(received_message)
-                if remove_idx < 0:
-                    serial.write_line("# INTERNAL ERROR: Didn't find line to remove!")
-                received_messages.remove_at(remove_idx)
+                received_messages.remove_at(i)
                 return 1
     serial.write_line("# Found no previous match of this id+type")
     return 1
@@ -151,7 +149,7 @@ def append_forwarded_device_id(messageBuffer: Buffer):
 
 # Callback function on recieved wireless data
 def decode_buffer(receivedBuffer : Buffer):
-    global received_message_device_id, received_message_value_type, verbosity_level
+    global verbosity_level
     if verbosity_level in [0, 1]:
         basic.show_icon(IconNames.SMALL_DIAMOND)
 
@@ -168,10 +166,14 @@ def decode_buffer(receivedBuffer : Buffer):
         received_message_device_id = get_message_device_id(receivedBuffer)
         received_message_value_type = get_message_value_type(receivedBuffer)
         # Check if its our own data coming back to us
-        if DEVICE_ID != received_message_device_id:
+        if True or DEVICE_ID != received_message_device_id:
             # Check whether we've recently seen this data
             if check_last_message_time(received_message_device_id, received_message_value_type) == 1:
-                received_messages.append("" + received_message_device_id + ":" + received_message_value_type + "=" + str(input.running_time()))
+                last_seen = bytearray(6)
+                last_seen.setNumber(NumberFormat.INT8_LE, 0, received_message_device_id)
+                last_seen[1] = received_message_value_type.char_code_at(0)
+                last_seen.setNumber(NumberFormat.FLOAT32_LE, 2, input.running_time())
+                received_messages.append(last_seen)
                 # Tiny random pause before forwarding, to reduce collision odds
                 basic.pause(randint(0, 100))
                 # Append my own device ID to the message
@@ -221,7 +223,6 @@ def on_received_buffer(receivedBuffer):
     decrypted_msg = decrypt_message(receivedBuffer)
     decode_buffer(decrypted_msg)
 
-#radio.on_received_string(on_received_string) # Unencrypted
 radio.on_received_buffer(on_received_buffer) # Encrypted
 
 # Split out the type from <id>:<type>:<value>
@@ -257,21 +258,14 @@ def get_message_value(message: Buffer):
     except:
         return FAILURE_VALUE
 
-# Split out the recieved time from <id>:<type>=<timestamp>
-def get_message_received_time(message: str):
-    try:
-        return int(message.split("=")[1])
-    except:
-        return 0
+# Split out the recieved time from the buffer
+def get_message_received_time(prev_seen_message: Buffer):
+    return prev_seen_message.getNumber(NumberFormat.FLOAT32_LE, 2)
 
 # Initial setup and ID print
 FAILURE_VALUE = -999
 verbosity_level = 0
-received_message_value_type = ""
-received_message_device_id = -1
-time_since_message = 0
-message_received_time = 0
-received_messages: List[str] = []
+received_messages : List[Buffer] = []
 led.set_brightness(128)
 radio.set_group(181)
 radio.set_transmit_power(7)
@@ -281,8 +275,6 @@ TX_INTERVAL_MS = 10*60*1000
 TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
 
 basic.show_string("ID " + str(DEVICE_ID))
-#basic.show_icon(IconNames.SQUARE)
-#basic.show_string("Temp")
 basic.clear_screen()
 
 # Keep printing the current temp
