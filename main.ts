@@ -199,7 +199,7 @@ function decode_buffer(receivedBuffer: Buffer) {
         received_message_device_id = get_message_device_id(receivedBuffer)
         received_message_value_type = get_message_value_type(receivedBuffer)
         //  Check if its our own data coming back to us
-        if (true || DEVICE_ID != received_message_device_id) {
+        if (DEVICE_ID != received_message_device_id) {
             //  Check whether we've recently seen this data
             if (check_last_message_time(received_message_device_id, received_message_value_type) == 1) {
                 last_seen = control.createBuffer(6)
