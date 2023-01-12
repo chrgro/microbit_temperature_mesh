@@ -1,14 +1,91 @@
 //  DEVICE ID
 //  CHANGE FOR EVERY NEW DEVICE!
-let DEVICE_ID = 4
+let DEVICE_ID = 15
 //  Encryption key, must be 19 bytes
 let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+let AHTX0_I2CADDR = 0x38
+//  AHT default i2c address
+let AHTX0_CMD_CALIBRATE = 0xE1
+//  Calibration command
+let AHTX0_CMD_TRIGGER = 0xAC
+//  Trigger reading command
+let AHTX0_CMD_SOFTRESET = 0xBA
+//  Soft reset command
+let AHTX0_STATUS_BUSY = 0x80
+//  Status bit for busy
+let AHTX0_STATUS_CALIBRATED = 0x08
+//  Status bit for calibrated
+function ahtx0_get_status(): number {
+    return pins.i2cReadNumber(AHTX0_I2CADDR, NumberFormat.UInt8LE, false)
+}
+
+function init_ahtx0() {
+    serial.writeLine("# AHT sensor reset and calibration...")
+    //  Reset AHT
+    pins.i2cWriteNumber(AHTX0_I2CADDR, AHTX0_CMD_SOFTRESET, NumberFormat.Int8LE, false)
+    control.waitMicros(20000)
+    let cmd = Buffer.create(3)
+    cmd.setUint8(0, AHTX0_CMD_CALIBRATE)
+    cmd.setUint8(1, 0x08)
+    cmd.setUint8(2, 0x00)
+    pins.i2cWriteBuffer(AHTX0_I2CADDR, cmd, false)
+    while (ahtx0_get_status() & AHTX0_STATUS_BUSY) {
+        control.waitMicros(10000)
+        serial.writeLine("# AHT sensor not ready")
+    }
+    control.waitMicros(10000)
+    if (ahtx0_get_status() & AHTX0_STATUS_CALIBRATED) {
+        serial.writeLine("# AHT sensor calibrated")
+    } else {
+        serial.writeLine("# AHT sensor NOT calibrated!!")
+    }
+    
+}
+
+function ahtx0_get_data(): number[] {
+    let cmd = Buffer.create(3)
+    cmd.setNumber(NumberFormat.UInt8LE, 0, 0xAC)
+    cmd.setNumber(NumberFormat.UInt8LE, 1, 0x33)
+    cmd.setNumber(NumberFormat.UInt8LE, 2, 0x00)
+    pins.i2cWriteBuffer(AHTX0_I2CADDR, cmd)
+    control.waitMicros(90000)
+    while (ahtx0_get_status() & AHTX0_STATUS_BUSY) {
+        control.waitMicros(20000)
+        serial.writeLine("# Sensor should not take so long time...")
+    }
+    let readbuf = pins.i2cReadBuffer(AHTX0_I2CADDR, 6, false)
+    let h = readbuf.getNumber(NumberFormat.UInt8LE, 1)
+    h <<= 8
+    h |= readbuf.getNumber(NumberFormat.UInt8LE, 2)
+    h <<= 4
+    h |= readbuf.getNumber(NumberFormat.UInt8LE, 3) >> 4
+    let humidity = h * 100.0 / 0x100000
+    serial.writeString("# Humidity: ")
+    serial.writeNumber(humidity)
+    let t = readbuf.getNumber(NumberFormat.UInt8LE, 3) & 0x0F
+    t <<= 8
+    t |= readbuf.getNumber(NumberFormat.UInt8LE, 4)
+    t <<= 8
+    t |= readbuf.getNumber(NumberFormat.UInt8LE, 5)
+    let temperature = t / 0x100000 * 200.0 - 50
+    serial.writeString(" Temperature: ")
+    serial.writeNumber(temperature)
+    serial.writeLine("")
+    return [temperature, humidity]
+}
+
 //  Function to retrieve the temperature
 //  In the future, expand this to read from an external set_transmit_power
 //  instead of the internal microbit sensor
 function read_temp(): number {
     let raw_value: number;
     let temp: number;
+    let i2c_aht_temp = true
+    if (i2c_aht_temp) {
+        let [temperature, humidity] = ahtx0_get_data()
+        return temperature
+    }
+    
     let i2c_temp = false
     if (i2c_temp) {
         raw_value = pins.i2cReadNumber(0x48, NumberFormat.Int16BE, false)
@@ -339,6 +416,7 @@ led.setBrightness(128)
 radio.setGroup(181)
 radio.setTransmitPower(7)
 serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
+init_ahtx0()
 let TX_INTERVAL_MS = 10 * 60 * 1000
 let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
