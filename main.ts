@@ -342,6 +342,7 @@ serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
 let TX_INTERVAL_MS = 10 * 60 * 1000
 let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
+basic.showIcon(IconNames.SmallSquare)
 basic.clearScreen()
 //  Keep printing the current temp
 basic.forever(function on_forever_show_screen() {

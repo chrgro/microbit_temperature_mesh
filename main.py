@@ -275,6 +275,7 @@ TX_INTERVAL_MS = 10*60*1000
 TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
 
 basic.show_string("ID " + str(DEVICE_ID))
+basic.show_icon(IconNames.SMALL_SQUARE)
 basic.clear_screen()
 
 # Keep printing the current temp
