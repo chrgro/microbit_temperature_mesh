@@ -7,8 +7,6 @@ let AHTX0_I2CADDR = 0x38
 //  AHT default i2c address
 let AHTX0_CMD_CALIBRATE = 0xE1
 //  Calibration command
-let AHTX0_CMD_TRIGGER = 0xAC
-//  Trigger reading command
 let AHTX0_CMD_SOFTRESET = 0xBA
 //  Soft reset command
 let AHTX0_STATUS_BUSY = 0x80
@@ -77,25 +75,23 @@ function ahtx0_get_data(): number[] {
 //  Function to retrieve the temperature
 //  In the future, expand this to read from an external set_transmit_power
 //  instead of the internal microbit sensor
-function read_temp(): number {
+function read_temp_humidity(): number[] {
     let raw_value: number;
     let temp: number;
     let i2c_aht_temp = true
+    let i2c_temp = false
     if (i2c_aht_temp) {
         let [temperature, humidity] = ahtx0_get_data()
-        return temperature
-    }
-    
-    let i2c_temp = false
-    if (i2c_temp) {
+        return [temperature, humidity]
+    } else if (i2c_temp) {
         raw_value = pins.i2cReadNumber(0x48, NumberFormat.Int16BE, false)
         //  Reduce to just 2 subfractional bits (i.e. 0.25 C resolution)
         // truncated_value = raw_value & 0xffC0
         temp = raw_value * 0.00390625
         //  divide by 256
-        return temp
+        return [temp, -1]
     } else {
-        return input.temperature()
+        return [input.temperature(), -1]
     }
     
 }
@@ -143,7 +139,12 @@ function decrypt_message(message: Buffer): Buffer {
 
 //  On press button A, force a value send
 input.onButtonPressed(Button.A, function on_button_pressed_a() {
-    send_message("t", read_temp())
+    let [temp, humidity] = read_temp_humidity()
+    send_message("t", temp)
+    if (humidity >= 0) {
+        send_message("h", humidity)
+    }
+    
 })
 //  On press button B, change how much is shown on screen
 input.onButtonPressed(Button.B, function on_button_pressed_b() {
@@ -425,13 +426,28 @@ basic.clearScreen()
 //  Keep printing the current temp
 basic.forever(function on_forever_show_screen() {
     if ([0, 2].indexOf(verbosity_level) >= 0) {
-        basic.showNumber(Math.roundWithPrecision(read_temp(), 1))
+        let [temp, humidity] = read_temp_humidity()
+        basic.showNumber(Math.roundWithPrecision(temp, 1))
+        basic.showString("C ")
+        if (humidity >= 0) {
+            basic.pause(1000)
+            basic.showNumber(humidity)
+            basic.showString("%")
+        }
+        
     }
     
-    basic.pause(5000)
+    basic.pause(8000)
 })
 //  Keep sending out the temperature
 basic.forever(function on_forever_send() {
-    basic.pause(TX_INTERVAL_MS)
-    send_message("t", read_temp())
+    basic.pause(TX_INTERVAL_MS / 2)
+    let [temp1, humidity1] = read_temp_humidity()
+    send_message("t", temp1)
+    basic.pause(TX_INTERVAL_MS / 2)
+    let [temp2, humidity2] = read_temp_humidity()
+    if (humidity2 >= 0) {
+        send_message("h", humidity2)
+    }
+    
 })
