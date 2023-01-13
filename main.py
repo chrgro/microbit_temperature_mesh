@@ -1,14 +1,82 @@
 # DEVICE ID
 # CHANGE FOR EVERY NEW DEVICE!
-DEVICE_ID = 4
+DEVICE_ID = 15
 
 # Encryption key, must be 19 bytes
 key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+AHTX0_I2CADDR=0x38           # AHT default i2c address
+AHTX0_CMD_CALIBRATE=0xE1     # Calibration command
+AHTX0_CMD_TRIGGER=0xAC       # Trigger reading command
+AHTX0_CMD_SOFTRESET=0xBA     # Soft reset command
+AHTX0_STATUS_BUSY=0x80       # Status bit for busy
+AHTX0_STATUS_CALIBRATED=0x08 # Status bit for calibrated
+
+def ahtx0_get_status():
+    return pins.i2c_read_number(AHTX0_I2CADDR, NumberFormat.UINT8_LE, False)
+
+def init_ahtx0():
+    serial.write_line("# AHT sensor reset and calibration...")
+    # Reset AHT
+    pins.i2c_write_number(AHTX0_I2CADDR, AHTX0_CMD_SOFTRESET, NumberFormat.INT8_LE, False)
+    control.wait_micros(20000)
+
+    cmd = Buffer.create(3)
+    cmd.set_uint8(0, AHTX0_CMD_CALIBRATE)
+    cmd.set_uint8(1, 0x08)
+    cmd.set_uint8(2, 0x00)
+    pins.i2c_write_buffer(AHTX0_I2CADDR, cmd, False)
+
+    while(ahtx0_get_status() & AHTX0_STATUS_BUSY):
+        control.wait_micros(10000)
+        serial.write_line("# AHT sensor not ready")
+    control.wait_micros(10000)
+    if (ahtx0_get_status() & AHTX0_STATUS_CALIBRATED):
+        serial.write_line("# AHT sensor calibrated")
+    else:
+        serial.write_line("# AHT sensor NOT calibrated!!")
+
+def ahtx0_get_data():
+    cmd = Buffer.create(3)
+    cmd.set_number(NumberFormat.UINT8_LE, 0, 0xAC)
+    cmd.set_number(NumberFormat.UINT8_LE, 1, 0x33)
+    cmd.set_number(NumberFormat.UINT8_LE, 2, 0x00)
+    pins.i2c_write_buffer(AHTX0_I2CADDR, cmd)
+    control.wait_micros(90000)
+    while(ahtx0_get_status() & AHTX0_STATUS_BUSY):
+        control.wait_micros(20000)
+        serial.write_line("# Sensor should not take so long time...")
+    readbuf = pins.i2c_read_buffer(AHTX0_I2CADDR, 6, False)
+
+    h = readbuf.get_number(NumberFormat.UINT8_LE, 1)
+    h <<= 8
+    h |= readbuf.get_number(NumberFormat.UINT8_LE, 2)
+    h <<= 4
+    h |= (readbuf.get_number(NumberFormat.UINT8_LE, 3) >> 4)
+    humidity = (h*100.0) / 0x100000
+    serial.write_string("# Humidity: ")
+    serial.write_number(humidity)
+
+    t = (readbuf.get_number(NumberFormat.UINT8_LE, 3) & 0x0F)
+    t <<= 8
+    t |= readbuf.get_number(NumberFormat.UINT8_LE, 4)
+    t <<= 8
+    t |= readbuf.get_number(NumberFormat.UINT8_LE, 5)
+    temperature = ((t / 0x100000) * 200.0) - 50;
+    serial.write_string(" Temperature: ")
+    serial.write_number(temperature)
+    serial.write_line("")
+    return (temperature, humidity)
 
 # Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
 # instead of the internal microbit sensor
 def read_temp():
+    i2c_aht_temp = True
+    if i2c_aht_temp:
+        temperature, humidity = ahtx0_get_data()
+        return temperature
+
     i2c_temp = False
     if i2c_temp:
         raw_value = pins.i2c_read_number(0x48, NumberFormat.INT16_BE, False)
@@ -18,6 +86,7 @@ def read_temp():
         return temp
     else:
         return input.temperature()
+
 
 # Encryption is a simple XOR, with keysize equal to datasize,
 # 19 bytes. This is equally safe as any other block cipher.
@@ -103,7 +172,7 @@ def check_last_message_time(received_device_id: number, received_value_type: str
         prev_seen_message : Buffer = received_messages[i]
         if get_message_device_id(prev_seen_message) == received_device_id and get_message_value_type(prev_seen_message) == received_value_type:
             message_received_time = get_message_received_time(prev_seen_message)
-            running_time = input.running_time() 
+            running_time = input.running_time()
             time_since_message = running_time - message_received_time
             if 0 < time_since_message < TX_FLOOD_CONTROL_MS:
                 serial.write_line("# Very recent match, current time was " + str(running_time) +" and time since msg "+str(time_since_message))
@@ -271,6 +340,8 @@ radio.set_group(181)
 radio.set_transmit_power(7)
 serial.write_line("# Powered on, with ID: "+  str(DEVICE_ID))
 
+init_ahtx0()
+
 TX_INTERVAL_MS = 10*60*1000
 TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
 
@@ -281,7 +352,7 @@ basic.clear_screen()
 # Keep printing the current temp
 def on_forever_show_screen():
     if verbosity_level in [0, 2]:
-        basic.show_number(read_temp())
+        basic.show_number(Math.round_with_precision(read_temp(), 1))
     basic.pause(5000)
 basic.forever(on_forever_show_screen)
 
