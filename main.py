@@ -352,7 +352,7 @@ basic.clear_screen()
 # Keep printing the current temp
 def on_forever_show_screen():
     if verbosity_level in [0, 2]:
-        basic.show_number(read_temp())
+        basic.show_number(Math.round_with_precision(read_temp(), 1))
     basic.pause(5000)
 basic.forever(on_forever_show_screen)
 

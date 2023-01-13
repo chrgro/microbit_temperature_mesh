@@ -425,7 +425,7 @@ basic.clearScreen()
 //  Keep printing the current temp
 basic.forever(function on_forever_show_screen() {
     if ([0, 2].indexOf(verbosity_level) >= 0) {
-        basic.showNumber(read_temp())
+        basic.showNumber(Math.roundWithPrecision(read_temp(), 1))
     }
     
     basic.pause(5000)
