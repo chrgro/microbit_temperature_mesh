@@ -9,15 +9,18 @@ let AHTX0_CMD_CALIBRATE = 0xE1
 //  Calibration command
 let AHTX0_CMD_SOFTRESET = 0xBA
 //  Soft reset command
+let AHTX0_CMD_TRIGGER = 0xAC
 let AHTX0_STATUS_BUSY = 0x80
 //  Status bit for busy
 let AHTX0_STATUS_CALIBRATED = 0x08
 //  Status bit for calibrated
+let AHTX0_READ_ATTEMPTS = 5
 function ahtx0_get_status(): number {
     return pins.i2cReadNumber(AHTX0_I2CADDR, NumberFormat.UInt8LE, false)
 }
 
-function init_ahtx0() {
+function ahtx0_init() {
+    basic.showIcon(IconNames.Surprised)
     serial.writeLine("# AHT sensor reset and calibration...")
     //  Reset AHT
     pins.i2cWriteNumber(AHTX0_I2CADDR, AHTX0_CMD_SOFTRESET, NumberFormat.Int8LE, false)
@@ -34,22 +37,30 @@ function init_ahtx0() {
     control.waitMicros(10000)
     if (ahtx0_get_status() & AHTX0_STATUS_CALIBRATED) {
         serial.writeLine("# AHT sensor calibrated")
+        basic.showIcon(IconNames.Happy)
     } else {
         serial.writeLine("# AHT sensor NOT calibrated!!")
+        basic.showIcon(IconNames.Sad)
     }
     
+    basic.pause(1000)
 }
 
 function ahtx0_get_data(): number[] {
     let cmd = Buffer.create(3)
-    cmd.setNumber(NumberFormat.UInt8LE, 0, 0xAC)
+    cmd.setNumber(NumberFormat.UInt8LE, 0, AHTX0_CMD_TRIGGER)
     cmd.setNumber(NumberFormat.UInt8LE, 1, 0x33)
     cmd.setNumber(NumberFormat.UInt8LE, 2, 0x00)
     pins.i2cWriteBuffer(AHTX0_I2CADDR, cmd)
     control.waitMicros(90000)
-    while (ahtx0_get_status() & AHTX0_STATUS_BUSY) {
-        control.waitMicros(20000)
-        serial.writeLine("# Sensor should not take so long time...")
+    for (let attempt = 0; attempt < AHTX0_READ_ATTEMPTS; attempt++) {
+        if (ahtx0_get_status() & AHTX0_STATUS_BUSY) {
+            control.waitMicros(20000)
+            serial.writeLine("# Sensor should not take so long time... attempt " + ("" + attempt) + " of " + ("" + AHTX0_READ_ATTEMPTS))
+        } else {
+            break
+        }
+        
     }
     let readbuf = pins.i2cReadBuffer(AHTX0_I2CADDR, 6, false)
     let h = readbuf.getNumber(NumberFormat.UInt8LE, 1)
@@ -69,6 +80,12 @@ function ahtx0_get_data(): number[] {
     serial.writeString(" Temperature: ")
     serial.writeNumber(temperature)
     serial.writeLine("")
+    //  Temperature read from i2c can't be 0, let's re-init if we ever see 0
+    if (t == 0) {
+        ahtx0_init()
+        return [-50, -1]
+    }
+    
     return [temperature, humidity]
 }
 
@@ -417,7 +434,7 @@ led.setBrightness(128)
 radio.setGroup(181)
 radio.setTransmitPower(7)
 serial.writeLine("# Powered on, with ID: " + ("" + DEVICE_ID))
-init_ahtx0()
+ahtx0_init()
 let TX_INTERVAL_MS = 10 * 60 * 1000
 let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
@@ -427,12 +444,10 @@ basic.clearScreen()
 basic.forever(function on_forever_show_screen() {
     if ([0, 2].indexOf(verbosity_level) >= 0) {
         let [temp, humidity] = read_temp_humidity()
-        basic.showNumber(Math.roundWithPrecision(temp, 1))
-        basic.showString("C ")
+        basic.showString("" + Math.roundWithPrecision(temp, 1) + "C")
         if (humidity >= 0) {
             basic.pause(1000)
-            basic.showNumber(humidity)
-            basic.showString("%")
+            basic.showString("" + (Math.round(humidity) + "%"))
         }
         
     }

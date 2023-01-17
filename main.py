@@ -8,13 +8,16 @@ key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 AHTX0_I2CADDR=0x38           # AHT default i2c address
 AHTX0_CMD_CALIBRATE=0xE1     # Calibration command
 AHTX0_CMD_SOFTRESET=0xBA     # Soft reset command
+AHTX0_CMD_TRIGGER=0xAC
 AHTX0_STATUS_BUSY=0x80       # Status bit for busy
 AHTX0_STATUS_CALIBRATED=0x08 # Status bit for calibrated
+AHTX0_READ_ATTEMPTS=5
 
 def ahtx0_get_status():
     return pins.i2c_read_number(AHTX0_I2CADDR, NumberFormat.UINT8_LE, False)
 
-def init_ahtx0():
+def ahtx0_init():
+    basic.show_icon(IconNames.SURPRISED)
     serial.write_line("# AHT sensor reset and calibration...")
     # Reset AHT
     pins.i2c_write_number(AHTX0_I2CADDR, AHTX0_CMD_SOFTRESET, NumberFormat.INT8_LE, False)
@@ -32,19 +35,25 @@ def init_ahtx0():
     control.wait_micros(10000)
     if (ahtx0_get_status() & AHTX0_STATUS_CALIBRATED):
         serial.write_line("# AHT sensor calibrated")
+        basic.show_icon(IconNames.HAPPY)
     else:
         serial.write_line("# AHT sensor NOT calibrated!!")
+        basic.show_icon(IconNames.SAD)
+    basic.pause(1000)
 
 def ahtx0_get_data():
     cmd = Buffer.create(3)
-    cmd.set_number(NumberFormat.UINT8_LE, 0, 0xAC)
+    cmd.set_number(NumberFormat.UINT8_LE, 0, AHTX0_CMD_TRIGGER)
     cmd.set_number(NumberFormat.UINT8_LE, 1, 0x33)
     cmd.set_number(NumberFormat.UINT8_LE, 2, 0x00)
     pins.i2c_write_buffer(AHTX0_I2CADDR, cmd)
     control.wait_micros(90000)
-    while(ahtx0_get_status() & AHTX0_STATUS_BUSY):
-        control.wait_micros(20000)
-        serial.write_line("# Sensor should not take so long time...")
+    for attempt in range(AHTX0_READ_ATTEMPTS):
+        if(ahtx0_get_status() & AHTX0_STATUS_BUSY):
+            control.wait_micros(20000)
+            serial.write_line("# Sensor should not take so long time... attempt " + str(attempt) + " of " + str(AHTX0_READ_ATTEMPTS))
+        else:
+            break
     readbuf = pins.i2c_read_buffer(AHTX0_I2CADDR, 6, False)
 
     h = readbuf.get_number(NumberFormat.UINT8_LE, 1)
@@ -65,6 +74,12 @@ def ahtx0_get_data():
     serial.write_string(" Temperature: ")
     serial.write_number(temperature)
     serial.write_line("")
+
+    # Temperature read from i2c can't be 0, let's re-init if we ever see 0
+    if (t == 0):
+        ahtx0_init()
+        return -50, -1
+
     return (temperature, humidity)
 
 # Function to retrieve the temperature
@@ -342,7 +357,7 @@ radio.set_group(181)
 radio.set_transmit_power(7)
 serial.write_line("# Powered on, with ID: "+  str(DEVICE_ID))
 
-init_ahtx0()
+ahtx0_init()
 
 TX_INTERVAL_MS = 10*60*1000
 TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
@@ -355,13 +370,10 @@ basic.clear_screen()
 def on_forever_show_screen():
     if verbosity_level in [0, 2]:
         temp, humidity = read_temp_humidity()
-        basic.show_number(Math.round_with_precision(temp, 1))
-        basic.show_string("C ")
+        basic.show_string(str(Math.round_with_precision(temp, 1)) + "C")
         if humidity >= 0:
             basic.pause(1000)
-            basic.show_number(humidity)
-            basic.show_string("%")
-
+            basic.show_string(str(Math.round(humidity) + "%"))
     basic.pause(8000)
 basic.forever(on_forever_show_screen)
 
