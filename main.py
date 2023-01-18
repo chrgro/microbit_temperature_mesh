@@ -13,6 +13,9 @@ AHTX0_STATUS_BUSY=0x80       # Status bit for busy
 AHTX0_STATUS_CALIBRATED=0x08 # Status bit for calibrated
 AHTX0_READ_ATTEMPTS=5
 
+SGP30_PRESENT=0
+SGP30_I2CADDR=0x58           # SGP30 default i2c address
+
 def ahtx0_get_status():
     return pins.i2c_read_number(AHTX0_I2CADDR, NumberFormat.UINT8_LE, False)
 
@@ -81,6 +84,67 @@ def ahtx0_get_data():
         return -50, -1
 
     return (temperature, humidity)
+
+
+def sgp30_init():
+    serial.write_line("# SGP sensor init...")
+    # Send command "Init_air_quality"
+    cmd = Buffer.create(2)
+    cmd.set_uint8(0, 0x20)
+    cmd.set_uint8(1, 0x03)
+    pins.i2c_write_buffer(SGP30_I2CADDR, cmd, False)
+    # Takes max 10ms according to datasheet
+    control.wait_micros(10000)
+
+# Compute the CRC-8 of two bytes received from the SGP30
+def g_crc(data):
+    c=0xFF
+    for byte in [1,0]:
+        c^=(data>>(byte*8)) & 0xFF
+        for _ in range(8):
+          if c&0x80:c=(c<<1)^0x31
+          else:c<<=1
+    return c&0xFF
+
+def sgp30_get_data():
+    # Send command "Measure_air_quality"
+    cmd = Buffer.create(2)
+    cmd.set_uint8(0, 0x20)
+    cmd.set_uint8(1, 0x08)
+    pins.i2c_write_buffer(SGP30_I2CADDR, cmd, False)
+    # Takes max 12ms according to datasheet
+    control.wait_micros(12000)
+    # Read 6 bytes back:
+    # [co2MSB, co2LSB, co2CRC, vocMSB, vocLSB, vocCRC]
+    readbuf = pins.i2c_read_buffer(SGP30_I2CADDR, 6, False)
+
+    # Extract eCO2 value from buffer
+    eco2 = readbuf.get_number(NumberFormat.UINT8_LE, 0)
+    eco2 <<= 8
+    eco2 |= readbuf.get_number(NumberFormat.UINT8_LE, 1)
+    # Calculate and compare co2 CRC
+    crc = readbuf.get_number(NumberFormat.UINT8_LE, 2)
+    if g_crc(eco2) != crc:
+        serial.write_string("# C02 CRC ERROR!!!")
+        eco2 = -1
+
+    # Extract VOC value from buffer
+    voc = readbuf.get_number(NumberFormat.UINT8_LE, 3)
+    voc <<= 8
+    voc |= readbuf.get_number(NumberFormat.UINT8_LE, 4)
+    # Calculate and compare VOC CRC
+    crc = readbuf.get_number(NumberFormat.UINT8_LE, 5)
+    if g_crc(voc) != crc:
+        serial.write_string("# VOC CRC ERROR!!!")
+        voc = -1
+
+#    Very noisy as it is measured every second
+#    serial.write_string("# eCO2: ")
+#    serial.write_number(eco2)
+#    serial.write_string(" TVOC: ")
+#    serial.write_number(voc)
+#    serial.write_line("")
+    return (voc, eco2)
 
 # Function to retrieve the temperature
 # In the future, expand this to read from an external set_transmit_power
@@ -358,6 +422,11 @@ radio.set_transmit_power(7)
 serial.write_line("# Powered on, with ID: "+  str(DEVICE_ID))
 
 ahtx0_init()
+if SGP30_PRESENT:
+    sgp30_init()
+
+eco2 = -1
+tvoc = -1
 
 TX_INTERVAL_MS = 10*60*1000
 TX_FLOOD_CONTROL_MS = int(TX_INTERVAL_MS * 0.9)
@@ -374,16 +443,35 @@ def on_forever_show_screen():
         if humidity >= 0:
             basic.pause(1000)
             basic.show_string(str(Math.round(humidity) + "%"))
+        if SGP30_PRESENT:
+            if eco2 >= 0:
+                basic.show_number(eco2)
+                basic.show_string("ppm ")
+
     basic.pause(8000)
 basic.forever(on_forever_show_screen)
 
 # Keep sending out the temperature
 def on_forever_send():
-    basic.pause(TX_INTERVAL_MS / 2)
+    stuff_to_send = 4 if SGP30_PRESENT else 2
+    basic.pause(TX_INTERVAL_MS / stuff_to_send)
     temp1, humidity1 = read_temp_humidity()
     send_message("t", temp1)
-    basic.pause(TX_INTERVAL_MS / 2)
+    basic.pause(TX_INTERVAL_MS / stuff_to_send)
     temp2, humidity2 = read_temp_humidity()
     if humidity2 >= 0:
         send_message("h", humidity2)
+    if SGP30_PRESENT:
+        basic.pause(TX_INTERVAL_MS / stuff_to_send)
+        if eco2 >= 0:
+            send_message("c", eco2)
+        basic.pause(TX_INTERVAL_MS / stuff_to_send)
+        if tvoc >= 0:
+            send_message("v", tvoc)
 basic.forever(on_forever_send)
+
+def on_forever_measure():
+    basic.pause(1000)
+    voc, co2 = sgp30_get_data()
+if SGP30_PRESENT:
+    basic.forever(on_forever_measure)
