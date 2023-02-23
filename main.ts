@@ -1,6 +1,6 @@
 //  DEVICE ID
 //  CHANGE FOR EVERY NEW DEVICE!
-let DEVICE_ID = 15
+let DEVICE_ID = 19
 //  Encryption key, must be 19 bytes
 let key = pins.createBufferFromArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 let AHTX0_I2CADDR = 0x38
@@ -43,9 +43,19 @@ function ahtx0_init(): boolean {
     } else {
         serial.writeLine("# AHT sensor NOT calibrated!!")
         basic.showIcon(IconNames.Sad)
+        
+        aht_init_failed_count += 1
+        if (aht_init_failed_count >= 10) {
+            serial.writeLine("# Failed AHT init 10 times, resetting microbit")
+            send_message("e", 4)
+            basic.pause(1000)
+            control.reset()
+        }
+        
         return false
     }
     
+    aht_init_failed_count = 0
     return true
     basic.pause(1000)
 }
@@ -412,6 +422,7 @@ function get_message_received_time(prev_seen_message: Buffer): number {
 //  Initial setup and ID print
 let FAILURE_VALUE = -999
 let verbosity_level = 0
+let aht_init_failed_count = 0
 let received_messages : Buffer[] = []
 led.setBrightness(128)
 radio.setGroup(181)

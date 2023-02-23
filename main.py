@@ -1,6 +1,6 @@
 # DEVICE ID
 # CHANGE FOR EVERY NEW DEVICE!
-DEVICE_ID = 15
+DEVICE_ID = 19
 
 # Encryption key, must be 19 bytes
 key = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
@@ -42,7 +42,16 @@ def ahtx0_init():
     else:
         serial.write_line("# AHT sensor NOT calibrated!!")
         basic.show_icon(IconNames.SAD)
+        global aht_init_failed_count
+        aht_init_failed_count += 1
+        if aht_init_failed_count >= 10:
+            serial.write_line("# Failed AHT init 10 times, resetting microbit")
+            send_message("e", 4)
+            basic.pause(1000)
+            control.reset()
         return False
+    
+    aht_init_failed_count = 0
     return True
     basic.pause(1000)
 
@@ -332,6 +341,7 @@ def get_message_received_time(prev_seen_message: Buffer):
 # Initial setup and ID print
 FAILURE_VALUE = -999
 verbosity_level = 0
+aht_init_failed_count = 0
 received_messages : List[Buffer] = []
 led.set_brightness(128)
 radio.set_group(181)
