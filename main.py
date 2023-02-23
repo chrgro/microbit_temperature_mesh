@@ -13,6 +13,9 @@ AHTX0_STATUS_BUSY=0x80       # Status bit for busy
 AHTX0_STATUS_CALIBRATED=0x08 # Status bit for calibrated
 AHTX0_READ_ATTEMPTS=5
 
+AHTX0_CALIBRATION_SUCCESS_TEMP = -50
+AHTX0_CALIBRATION_FAILED_TEMP = -49
+
 def ahtx0_get_status():
     return pins.i2c_read_number(AHTX0_I2CADDR, NumberFormat.UINT8_LE, False)
 
@@ -30,8 +33,8 @@ def ahtx0_init():
     pins.i2c_write_buffer(AHTX0_I2CADDR, cmd, False)
 
     while(ahtx0_get_status() & AHTX0_STATUS_BUSY):
+        serial.write_line("# AHT sensor busy, waiting...")
         control.wait_micros(10000)
-        serial.write_line("# AHT sensor not ready")
     control.wait_micros(10000)
     if (ahtx0_get_status() & AHTX0_STATUS_CALIBRATED):
         serial.write_line("# AHT sensor calibrated")
@@ -39,6 +42,8 @@ def ahtx0_init():
     else:
         serial.write_line("# AHT sensor NOT calibrated!!")
         basic.show_icon(IconNames.SAD)
+        return False
+    return True
     basic.pause(1000)
 
 def ahtx0_get_data():
@@ -62,7 +67,7 @@ def ahtx0_get_data():
     h <<= 4
     h |= (readbuf.get_number(NumberFormat.UINT8_LE, 3) >> 4)
     humidity = (h*100.0) / 0x100000
-    serial.write_string("# Humidity: ")
+    serial.write_string("# Measured Humidity: ")
     serial.write_number(humidity)
 
     t = (readbuf.get_number(NumberFormat.UINT8_LE, 3) & 0x0F)
@@ -77,8 +82,12 @@ def ahtx0_get_data():
 
     # Temperature read from i2c can't be 0, let's re-init if we ever see 0
     if (t == 0):
-        ahtx0_init()
-        return -50, -1
+        init_success = ahtx0_init()
+        # Report the sucess or failure of 
+        if init_success:
+            return AHTX0_CALIBRATION_SUCCESS_TEMP, -1
+        else:
+            return AHTX0_CALIBRATION_FAILED_TEMP, -1
 
     return (temperature, humidity)
 
@@ -135,34 +144,6 @@ def decrypt_message(message: Buffer):
         mod_v = message[i]
     return padded_plain_buffers[1:]
 
-
-# On press button A, force a value send
-def on_button_pressed_a():
-    temp, humidity = read_temp_humidity()
-    send_message("t", temp)
-    if humidity >= 0:
-        send_message("h", humidity)
-input.on_button_pressed(Button.A, on_button_pressed_a)
-
-# On press button B, change how much is shown on screen
-def on_button_pressed_b():
-    # 0: Show everything (current temp + radio events)
-    # 1: Only show radio events, don't show current temp
-    # 2: Only show current temp, don't show radio events
-    # 3: Keep the screen clear
-    global verbosity_level
-    verbosity_level = (verbosity_level + 1) % 4
-    if verbosity_level == 0:
-        basic.show_string("SHOW ALL")
-    elif verbosity_level == 1:
-        basic.show_string("RADIO ONLY")
-    elif verbosity_level == 2:
-        basic.show_string("TEMP ONLY")
-    elif verbosity_level == 3:
-        basic.show_string("QUIET")
-input.on_button_pressed(Button.B, on_button_pressed_b)
-
-
 # Wrapper function to send messages out on BLE
 def send_message(datatype: str, value: number):
     if verbosity_level in [0, 1]:
@@ -212,7 +193,7 @@ def is_message_bad(receivedBuffer : Buffer):
         return True
 
     # Reject messages of type different a small group
-    if get_message_value_type(receivedBuffer) not in ["t", "h", "c", "v", "n", "a", "b", "c"]:
+    if get_message_value_type(receivedBuffer) not in ["t", "h", "c", "v", "n", "a", "b", "d", "e"]:
         serial.write_line("# Error, rejecting message not having an expected type :"+get_message_value_type(receivedBuffer))
         return True
 
@@ -366,24 +347,66 @@ basic.show_string("ID " + str(DEVICE_ID))
 basic.show_icon(IconNames.SMALL_SQUARE)
 basic.clear_screen()
 
-# Keep printing the current temp
+temp = AHTX0_CALIBRATION_FAILED_TEMP
+humidity = -2
+
+# Keep measuring and printing the current temp/humidity
 def on_forever_show_screen():
+    global temp
+    global humidity
+    t, h = read_temp_humidity()
+    temp = t
+    humidity = h
     if verbosity_level in [0, 2]:
-        temp, humidity = read_temp_humidity()
         basic.show_string(str(Math.round_with_precision(temp, 1)) + "C")
         if humidity >= 0:
-            basic.pause(1000)
+            basic.pause(500)
             basic.show_string(str(Math.round(humidity) + "%"))
     basic.pause(8000)
 basic.forever(on_forever_show_screen)
 
-# Keep sending out the temperature
+# Keep sending out the temperature/humidity
 def on_forever_send():
     basic.pause(TX_INTERVAL_MS / 2)
-    temp1, humidity1 = read_temp_humidity()
-    send_message("t", temp1)
+    if temp == AHTX0_CALIBRATION_SUCCESS_TEMP:
+        serial.write_line("# Successfull AHT runtime calibration")
+        send_message("e", 1)
+    elif temp == AHTX0_CALIBRATION_FAILED_TEMP:
+        serial.write_line("# Failed AHT runtime calibration")
+        send_message("e", 2)
+    else:
+        send_message("t", temp)
     basic.pause(TX_INTERVAL_MS / 2)
-    temp2, humidity2 = read_temp_humidity()
-    if humidity2 >= 0:
-        send_message("h", humidity2)
+    if humidity >= 0:
+        send_message("h", humidity)
 basic.forever(on_forever_send)
+
+
+# On press button A, force a value send
+def on_button_pressed_a():
+    if temp < 0:
+        serial.write_line("# Error 3: Bad temp "+str(temp))
+        send_message("e", 3)
+    else:
+        send_message("t", temp)
+    if humidity >= 0:
+        send_message("h", humidity)
+input.on_button_pressed(Button.A, on_button_pressed_a)
+
+# On press button B, change how much is shown on screen
+def on_button_pressed_b():
+    # 0: Show everything (current temp + radio events)
+    # 1: Only show radio events, don't show current temp
+    # 2: Only show current temp, don't show radio events
+    # 3: Keep the screen clear
+    global verbosity_level
+    verbosity_level = (verbosity_level + 1) % 4
+    if verbosity_level == 0:
+        basic.show_string("SHOW ALL")
+    elif verbosity_level == 1:
+        basic.show_string("RADIO ONLY")
+    elif verbosity_level == 2:
+        basic.show_string("TEMP ONLY")
+    elif verbosity_level == 3:
+        basic.show_string("QUIET")
+input.on_button_pressed(Button.B, on_button_pressed_b)

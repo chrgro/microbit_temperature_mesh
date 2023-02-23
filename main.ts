@@ -15,11 +15,13 @@ let AHTX0_STATUS_BUSY = 0x80
 let AHTX0_STATUS_CALIBRATED = 0x08
 //  Status bit for calibrated
 let AHTX0_READ_ATTEMPTS = 5
+let AHTX0_CALIBRATION_SUCCESS_TEMP = -50
+let AHTX0_CALIBRATION_FAILED_TEMP = -49
 function ahtx0_get_status(): number {
     return pins.i2cReadNumber(AHTX0_I2CADDR, NumberFormat.UInt8LE, false)
 }
 
-function ahtx0_init() {
+function ahtx0_init(): boolean {
     basic.showIcon(IconNames.Surprised)
     serial.writeLine("# AHT sensor reset and calibration...")
     //  Reset AHT
@@ -31,8 +33,8 @@ function ahtx0_init() {
     cmd.setUint8(2, 0x00)
     pins.i2cWriteBuffer(AHTX0_I2CADDR, cmd, false)
     while (ahtx0_get_status() & AHTX0_STATUS_BUSY) {
+        serial.writeLine("# AHT sensor busy, waiting...")
         control.waitMicros(10000)
-        serial.writeLine("# AHT sensor not ready")
     }
     control.waitMicros(10000)
     if (ahtx0_get_status() & AHTX0_STATUS_CALIBRATED) {
@@ -41,12 +43,15 @@ function ahtx0_init() {
     } else {
         serial.writeLine("# AHT sensor NOT calibrated!!")
         basic.showIcon(IconNames.Sad)
+        return false
     }
     
+    return true
     basic.pause(1000)
 }
 
 function ahtx0_get_data(): number[] {
+    let init_success: boolean;
     let cmd = Buffer.create(3)
     cmd.setNumber(NumberFormat.UInt8LE, 0, AHTX0_CMD_TRIGGER)
     cmd.setNumber(NumberFormat.UInt8LE, 1, 0x33)
@@ -69,7 +74,7 @@ function ahtx0_get_data(): number[] {
     h <<= 4
     h |= readbuf.getNumber(NumberFormat.UInt8LE, 3) >> 4
     let humidity = h * 100.0 / 0x100000
-    serial.writeString("# Humidity: ")
+    serial.writeString("# Measured Humidity: ")
     serial.writeNumber(humidity)
     let t = readbuf.getNumber(NumberFormat.UInt8LE, 3) & 0x0F
     t <<= 8
@@ -82,8 +87,14 @@ function ahtx0_get_data(): number[] {
     serial.writeLine("")
     //  Temperature read from i2c can't be 0, let's re-init if we ever see 0
     if (t == 0) {
-        ahtx0_init()
-        return [-50, -1]
+        init_success = ahtx0_init()
+        //  Report the sucess or failure of 
+        if (init_success) {
+            return [AHTX0_CALIBRATION_SUCCESS_TEMP, -1]
+        } else {
+            return [AHTX0_CALIBRATION_FAILED_TEMP, -1]
+        }
+        
     }
     
     return [temperature, humidity]
@@ -154,34 +165,6 @@ function decrypt_message(message: Buffer): Buffer {
     return padded_plain_buffers.slice(1)
 }
 
-//  On press button A, force a value send
-input.onButtonPressed(Button.A, function on_button_pressed_a() {
-    let [temp, humidity] = read_temp_humidity()
-    send_message("t", temp)
-    if (humidity >= 0) {
-        send_message("h", humidity)
-    }
-    
-})
-//  On press button B, change how much is shown on screen
-input.onButtonPressed(Button.B, function on_button_pressed_b() {
-    //  0: Show everything (current temp + radio events)
-    //  1: Only show radio events, don't show current temp
-    //  2: Only show current temp, don't show radio events
-    //  3: Keep the screen clear
-    
-    verbosity_level = (verbosity_level + 1) % 4
-    if (verbosity_level == 0) {
-        basic.showString("SHOW ALL")
-    } else if (verbosity_level == 1) {
-        basic.showString("RADIO ONLY")
-    } else if (verbosity_level == 2) {
-        basic.showString("TEMP ONLY")
-    } else if (verbosity_level == 3) {
-        basic.showString("QUIET")
-    }
-    
-})
 //  Wrapper function to send messages out on BLE
 function send_message(datatype: string, value: number) {
     if ([0, 1].indexOf(verbosity_level) >= 0) {
@@ -244,7 +227,7 @@ function is_message_bad(receivedBuffer: Buffer): boolean {
     }
     
     //  Reject messages of type different a small group
-    if (["t", "h", "c", "v", "n", "a", "b", "c"].indexOf(get_message_value_type(receivedBuffer)) < 0) {
+    if (["t", "h", "c", "v", "n", "a", "b", "d", "e"].indexOf(get_message_value_type(receivedBuffer)) < 0) {
         serial.writeLine("# Error, rejecting message not having an expected type :" + get_message_value_type(receivedBuffer))
         return true
     }
@@ -440,13 +423,19 @@ let TX_FLOOD_CONTROL_MS = Math.trunc(TX_INTERVAL_MS * 0.9)
 basic.showString("ID " + ("" + DEVICE_ID))
 basic.showIcon(IconNames.SmallSquare)
 basic.clearScreen()
-//  Keep printing the current temp
+let temp = AHTX0_CALIBRATION_FAILED_TEMP
+let humidity = -2
+//  Keep measuring and printing the current temp/humidity
 basic.forever(function on_forever_show_screen() {
+    
+    
+    let [t, h] = read_temp_humidity()
+    temp = t
+    humidity = h
     if ([0, 2].indexOf(verbosity_level) >= 0) {
-        let [temp, humidity] = read_temp_humidity()
         basic.showString("" + Math.roundWithPrecision(temp, 1) + "C")
         if (humidity >= 0) {
-            basic.pause(1000)
+            basic.pause(500)
             basic.showString("" + (Math.round(humidity) + "%"))
         }
         
@@ -454,15 +443,55 @@ basic.forever(function on_forever_show_screen() {
     
     basic.pause(8000)
 })
-//  Keep sending out the temperature
+//  Keep sending out the temperature/humidity
 basic.forever(function on_forever_send() {
     basic.pause(TX_INTERVAL_MS / 2)
-    let [temp1, humidity1] = read_temp_humidity()
-    send_message("t", temp1)
+    if (temp == AHTX0_CALIBRATION_SUCCESS_TEMP) {
+        serial.writeLine("# Successfull AHT runtime calibration")
+        send_message("e", 1)
+    } else if (temp == AHTX0_CALIBRATION_FAILED_TEMP) {
+        serial.writeLine("# Failed AHT runtime calibration")
+        send_message("e", 2)
+    } else {
+        send_message("t", temp)
+    }
+    
     basic.pause(TX_INTERVAL_MS / 2)
-    let [temp2, humidity2] = read_temp_humidity()
-    if (humidity2 >= 0) {
-        send_message("h", humidity2)
+    if (humidity >= 0) {
+        send_message("h", humidity)
+    }
+    
+})
+//  On press button A, force a value send
+input.onButtonPressed(Button.A, function on_button_pressed_a() {
+    if (temp < 0) {
+        serial.writeLine("# Error 3: Bad temp " + ("" + temp))
+        send_message("e", 3)
+    } else {
+        send_message("t", temp)
+    }
+    
+    if (humidity >= 0) {
+        send_message("h", humidity)
+    }
+    
+})
+//  On press button B, change how much is shown on screen
+input.onButtonPressed(Button.B, function on_button_pressed_b() {
+    //  0: Show everything (current temp + radio events)
+    //  1: Only show radio events, don't show current temp
+    //  2: Only show current temp, don't show radio events
+    //  3: Keep the screen clear
+    
+    verbosity_level = (verbosity_level + 1) % 4
+    if (verbosity_level == 0) {
+        basic.showString("SHOW ALL")
+    } else if (verbosity_level == 1) {
+        basic.showString("RADIO ONLY")
+    } else if (verbosity_level == 2) {
+        basic.showString("TEMP ONLY")
+    } else if (verbosity_level == 3) {
+        basic.showString("QUIET")
     }
     
 })
